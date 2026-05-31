@@ -1,0 +1,23 @@
+{
+  "name": "github-issue-payment-timeout",
+  "source_type": "github",
+  "kind": "issue",
+  "repo": "acme/payments",
+  "external_id": "acme/payments#231",
+  "url": "https://github.com/acme/payments/issues/231",
+  "title": "payment-service times out under load when calling the fraud-check API",
+  "labels": [
+    "bug",
+    "reliability"
+  ],
+  "body": "Under peak traffic, payment-service requests to the external fraud-check API exceed the 2s timeout and cascade into 500s for checkout. Related to the retry storm described in #198.\n\nThe synchronous call to fraud-check blocks the request thread; we should consider making it async or adding a circuit breaker. Affects the checkout flow in the storefront.",
+  "golden": {
+    "entities": [
+      "payment-service",
+      "fraud-check"
+    ],
+    "relationship_targets": [
+      "fraud-check"
+    ]
+  }
+}

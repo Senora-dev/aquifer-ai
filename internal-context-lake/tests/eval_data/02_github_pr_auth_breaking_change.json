@@ -1,0 +1,25 @@
+{
+  "name": "github-pr-auth-breaking-change",
+  "source_type": "github",
+  "kind": "pr",
+  "repo": "acme/auth-service",
+  "external_id": "acme/auth-service#88",
+  "url": "https://github.com/acme/auth-service/pull/88",
+  "title": "Rotate token signing to ES256 and drop the legacy /v1/verify endpoint",
+  "labels": [
+    "breaking-change",
+    "security"
+  ],
+  "body": "Moves auth-service token signing from HS256 to ES256 and removes the deprecated `/v1/verify` endpoint. Downstream services that validate tokens (api-gateway, billing-api) must upgrade to the auth-client >= 3.0 SDK first; older clients will reject ES256 tokens.\n\nThis is a BREAKING CHANGE: do not deploy auth-service until all consumers are on auth-client 3.0, or token validation across the fleet will fail. Coordinate a staged rollout with the platform team.",
+  "golden": {
+    "entities": [
+      "auth-service",
+      "api-gateway",
+      "billing-api"
+    ],
+    "relationship_targets": [
+      "api-gateway",
+      "billing-api"
+    ]
+  }
+}

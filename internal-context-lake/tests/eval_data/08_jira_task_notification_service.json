@@ -1,0 +1,15 @@
+{
+  "name": "jira-task-notification-service",
+  "source_type": "jira",
+  "kind": "issue",
+  "repo": "PLAT",
+  "external_id": "PLAT-204",
+  "url": "https://acme.atlassian.net/browse/PLAT-204",
+  "title": "PLAT-204: Roll out notification-service to production",
+  "labels": ["task"],
+  "body": "Part of epic PLAT-200 (Messaging Platform). Deploy notification-service to the prod cluster. It depends on the kafka cluster for the `notifications.outbound` topic and on the templates-service for rendering. Relates to PLAT-198 which provisioned the prod namespace.",
+  "golden": {
+    "entities": ["notification-service", "kafka", "templates-service"],
+    "relationship_targets": ["PLAT-200", "kafka", "templates-service", "PLAT-198"]
+  }
+}

@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# Tests / tooling
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# AWS CDK
+infrastructure/cdk.out/
+infrastructure/.cdk.staging/
+*.swp
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

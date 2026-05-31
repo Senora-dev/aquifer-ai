@@ -1,0 +1,23 @@
+{
+  "name": "github-pr-redis-cache",
+  "source_type": "github",
+  "kind": "pr",
+  "repo": "acme/billing",
+  "external_id": "acme/billing#412",
+  "url": "https://github.com/acme/billing/pull/412",
+  "title": "Add Redis caching layer to billing-api",
+  "labels": [
+    "enhancement",
+    "performance"
+  ],
+  "body": "This PR introduces a Redis-backed read-through cache in front of the invoice lookups in billing-api. We add a new dependency on a shared Redis cluster (redis) and a cache-warming job.\n\nIMPORTANT: this change adds a new `invoice_cache` table used for cache bookkeeping, so the database migration in `migrations/0042_invoice_cache.sql` MUST be applied before this is deployed, or the service will fail to boot. Cache reads fall back to Postgres on a miss.\n\nRollout: deploy behind the `billing_cache_enabled` feature flag, off by default.",
+  "golden": {
+    "entities": [
+      "billing-api",
+      "redis"
+    ],
+    "relationship_targets": [
+      "redis"
+    ]
+  }
+}

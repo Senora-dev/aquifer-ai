@@ -1,0 +1,22 @@
+{
+  "name": "jira-task-blocked-by-security",
+  "source_type": "jira",
+  "kind": "issue",
+  "repo": "PROJ",
+  "external_id": "PROJ-512",
+  "url": "https://acme.atlassian.net/browse/PROJ-512",
+  "title": "PROJ-512: Expose customer export API in reporting-service",
+  "labels": [
+    "story"
+  ],
+  "body": "Part of epic PROJ-400 (Customer Data Portability). Implement a new export endpoint in reporting-service that streams customer data as CSV.\n\nBlocked by PROJ-489 (security review of PII handling) \u2014 cannot start implementation until the security team signs off on the data classification. Depends on the data-platform team exposing the `customer_events` view.",
+  "golden": {
+    "entities": [
+      "reporting-service"
+    ],
+    "relationship_targets": [
+      "PROJ-400",
+      "PROJ-489"
+    ]
+  }
+}

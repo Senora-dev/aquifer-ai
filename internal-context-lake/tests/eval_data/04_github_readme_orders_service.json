@@ -1,0 +1,22 @@
+{
+  "name": "github-readme-orders-service",
+  "source_type": "github",
+  "kind": "readme",
+  "repo": "acme/orders-service",
+  "external_id": "acme/orders-service#readme",
+  "url": "https://github.com/acme/orders-service",
+  "title": "acme/orders-service README",
+  "labels": [],
+  "body": "# orders-service\n\norders-service owns the order lifecycle (create, fulfil, cancel) and is maintained by the Fulfilment team.\n\n## Dependencies\n- Postgres (primary datastore)\n- billing-api (for invoice creation)\n- the events Kafka topic `orders.events` (publishes order state changes)\n\n## Operational notes\nThis service is PCI-relevant: it must never log full card numbers, and all deploys to production require a change ticket approved by the Fulfilment on-call. Supported runtime is Java 21.",
+  "golden": {
+    "entities": [
+      "orders-service",
+      "postgres",
+      "billing-api"
+    ],
+    "relationship_targets": [
+      "postgres",
+      "billing-api"
+    ]
+  }
+}

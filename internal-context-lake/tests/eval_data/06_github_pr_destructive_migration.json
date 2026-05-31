@@ -1,0 +1,20 @@
+{
+  "name": "github-pr-destructive-migration",
+  "source_type": "github",
+  "kind": "pr",
+  "repo": "acme/inventory",
+  "external_id": "acme/inventory#77",
+  "url": "https://github.com/acme/inventory/pull/77",
+  "title": "Drop the deprecated `warehouses.legacy_code` column",
+  "labels": [
+    "database",
+    "breaking-change"
+  ],
+  "body": "Removes the long-deprecated `legacy_code` column from the warehouses table in inventory-service. The column has had no writers since Q3.\n\nWARNING: this migration is IRREVERSIBLE and destroys data. It must be run during a maintenance window with a verified backup, and requires DBA approval before deploy. Confirm no reporting jobs still read `legacy_code` first.",
+  "golden": {
+    "entities": [
+      "inventory-service"
+    ],
+    "relationship_targets": []
+  }
+}

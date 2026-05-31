@@ -1,0 +1,16 @@
+Business Source License 1.1
+
+PLACEHOLDER — full BSL 1.1 legal text to be inserted before public release.
+
+License Parameters:
+  Licensor:             Senora Technologies Ltd.
+  Licensed Work:        Aquifer.ai (this repository)
+  Additional Use Grant: Permission is hereby granted to use, copy, modify, and distribute the
+                        Licensed Work for any internal purpose, provided that you do not offer
+                        the Licensed Work as a managed service to third parties.
+  Change Date:          2029-05-31 (3 years from release)
+  Change License:       Apache License, Version 2.0
+
+Until the full text is added, this software is source-available under BSL 1.1 terms.
+The canonical template is published at https://mariadb.com/bsl11/.
+See LICENSE_TERMS.md for a plain-language summary.

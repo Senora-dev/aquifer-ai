@@ -1,0 +1,23 @@
+{
+  "name": "github-pr-rate-limit-gateway",
+  "source_type": "github",
+  "kind": "pr",
+  "repo": "acme/api-gateway",
+  "external_id": "acme/api-gateway#150",
+  "url": "https://github.com/acme/api-gateway/pull/150",
+  "title": "Add per-tenant rate limiting to api-gateway",
+  "labels": [
+    "security",
+    "enhancement"
+  ],
+  "body": "Adds a token-bucket rate limiter to api-gateway, keyed by tenant id, backed by redis. Limits are configured per route in `ratelimits.yaml`.\n\nSecurity requirement: the limiter must fail closed (reject) if redis is unavailable, to prevent abuse. Per the platform architecture guidelines, all public ingress must enforce rate limiting before this PR can be approved.",
+  "golden": {
+    "entities": [
+      "api-gateway",
+      "redis"
+    ],
+    "relationship_targets": [
+      "redis"
+    ]
+  }
+}
