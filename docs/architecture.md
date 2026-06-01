@@ -10,6 +10,12 @@ platform engineers and architects evaluating or operating Aquifer.
 
 ## High-level architecture
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Senora-dev/aquifer-ai-assets/main/architecture.png" alt="Aquifer AI architecture diagram" width="800">
+</p>
+
+The diagram below is the source-of-truth schematic; the rendered version above mirrors it.
+
 ```mermaid
 flowchart LR
     subgraph VPC["Your VPC (private subnets)"]

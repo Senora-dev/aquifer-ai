@@ -1,5 +1,7 @@
 # Aquifer AI
 
+![aquifer-logo](https://raw.githubusercontent.com/Senora-dev/aquifer-ai-assets/main/logo.png)
+
 An open-source, **in-VPC Context Lake** — neutral **infrastructure for AI agents**, not a
 developer portal and not a reasoning engine. Aquifer is headless: it aggregates engineering
 context (GitHub first) into an OpenSearch vector store and exposes a standard **MCP API** that
@@ -43,17 +45,14 @@ Agents reach the lake through five neutral retrieval tools (no verdicts, no inte
 
 ## Architecture (baseline)
 
-```
-EventBridge ─► Discovery Lambda ─► SQS ─► Worker Lambda ─► Bedrock (embed) ─► OpenSearch Serverless
-                                                                                        ▲
-AI agents ──MCP (HTTP/SSE)──► Fargate MCP server ──embed query + k-NN search────────────┘
-```
 
 - **Vector store:** Amazon OpenSearch Serverless (k-NN vectors)
 - **Compute:** Lambda for ingestion (SQS fan-out), Fargate for the persistent MCP server
 - **Embeddings:** Amazon Bedrock via a VPC (PrivateLink) endpoint
 - **Connectors:** GitHub (issues, PRs, READMEs, discussions); more are additive via the
   `Connector` interface
+
+![aquifer-arch](https://raw.githubusercontent.com/Senora-dev/aquifer-ai-assets/main/architecture.png)
 
 ## Documentation
 
