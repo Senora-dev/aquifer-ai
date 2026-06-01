@@ -1,6 +1,8 @@
-# Aquifer AI
+<h1 align="center">Aquifer AI</h1>
 
-![aquifer-logo](https://raw.githubusercontent.com/Senora-dev/aquifer-ai-assets/main/logo.png)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Senora-dev/aquifer-ai-assets/main/logo.png" alt="Aquifer AI logo" width="90">
+</p>
 
 An open-source, **in-VPC Context Lake** — neutral **infrastructure for AI agents**, not a
 developer portal and not a reasoning engine. Aquifer is headless: it aggregates engineering
@@ -45,14 +47,15 @@ Agents reach the lake through five neutral retrieval tools (no verdicts, no inte
 
 ## Architecture (baseline)
 
-
 - **Vector store:** Amazon OpenSearch Serverless (k-NN vectors)
 - **Compute:** Lambda for ingestion (SQS fan-out), Fargate for the persistent MCP server
 - **Embeddings:** Amazon Bedrock via a VPC (PrivateLink) endpoint
 - **Connectors:** GitHub (issues, PRs, READMEs, discussions); more are additive via the
   `Connector` interface
 
-![aquifer-arch](https://raw.githubusercontent.com/Senora-dev/aquifer-ai-assets/main/architecture.png)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Senora-dev/aquifer-ai-assets/main/architecture.png" alt="Aquifer AI architecture" width="800">
+</p>
 
 ## Documentation
 
