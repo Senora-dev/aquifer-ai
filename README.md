@@ -97,14 +97,63 @@ this baseline — instead, core exposes an `Interceptor` seam (`before/after_ing
 `before/after_query`, `authorize`) with pass-through no-op implementations. Enterprise features
 ship as a separate package that registers interceptors; **core never imports enterprise code**.
 
-## Quickstart (planned)
+## Quickstart
+
+Deploy the whole Context Lake into your own AWS account as a single CDK stack. The happy path is
+below; for configuration keys, ingestion details, and troubleshooting see
+[Getting Started](./docs/getting-started.md).
+
+**Prerequisites**
+
+- **Docker running** — CDK bundles the Lambda code and builds the MCP image locally at deploy time.
+- **AWS CLI v2**, configured with credentials (`aws configure`).
+- **Amazon Bedrock model access** enabled in your target region for the embedding model
+  (Titan Text Embeddings v2) and an inference (Claude) model.
+
+**1. Install and bootstrap**
 
 ```bash
-pip install -e ".[dev]"        # core + adapters + tooling
-pytest                          # run the test suite
-cd infrastructure && cdk synth  # synthesize the single stack
-cdk deploy                      # bring up the whole Context Lake
+pip install -e ".[dev,cdk]"        # package + tooling + CDK libraries
+npm install -g aws-cdk             # CDK Toolkit CLI
+
+export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+export CDK_DEFAULT_REGION=us-east-1     # your target region
+cd infrastructure
+cdk bootstrap                      # one-time per account/region
 ```
+
+**2. Deploy the stack**
+
+```bash
+cdk deploy -c repos='["your-org/your-repo"]'
+```
+
+On completion, CloudFormation prints the stack outputs, including `McpEndpoint` (the internal MCP
+API) and `GitHubTokenSecretArn` (the secret to populate next).
+
+**3. Inject the GitHub token**
+
+Store a fine-grained PAT with read access to the target repos in the created secret:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id <GitHubTokenSecretArn> \
+  --secret-string 'ghp_xxxxxxxxxxxxxxxxxxxx'
+```
+
+Discovery runs on a schedule (every 15 minutes by default); ingestion, semantic indexing, and
+embedding then proceed automatically.
+
+### Security & Architecture Note
+
+By design, Aquifer deploys into an **isolated VPC and exposes no public endpoints** — nothing is
+reachable from the internet, and no data leaves your network. The MCP API is served on an
+**internal** load balancer (`McpEndpoint`), so calling it from `localhost` will not work.
+
+Reach the MCP API from inside the network boundary — for example from an **EC2 bastion** or
+**Cloud9** environment in the VPC, or from your own machine over **Client VPN** or **VPC peering**.
+Point an MCP-capable agent at the `McpEndpoint` over HTTP/SSE and it can call `search_context`,
+`find_related`, `list_entities`, and the other tools.
 
 ## License
 
