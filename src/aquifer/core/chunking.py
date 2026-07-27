@@ -31,6 +31,16 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
     Consecutive chunks share roughly ``overlap`` tokens of trailing context so meaning that
     straddles a boundary is retrievable from either side.
     """
+    return [text for text, _ in chunk_text_with_overlap(text, chunk_size, overlap)]
+
+
+def chunk_text_with_overlap(text: str, chunk_size: int, overlap: int) -> list[tuple[str, int]]:
+    """Like :func:`chunk_text`, but each chunk carries its overlap with the previous one.
+
+    The second element is how many leading words of the chunk repeat the tail of its
+    predecessor (0 for the first chunk). Callers that put the document back together use it to
+    drop the shared words instead of emitting them twice.
+    """
     text = text.strip()
     if not text:
         return []
@@ -38,22 +48,24 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
         raise ValueError("overlap must be smaller than chunk_size")
 
     words = _WORD_RE.findall(text)
-    chunks: list[str] = []
+    chunks: list[tuple[str, int]] = []
     current: list[str] = []
     current_tokens = 0
+    carried = 0  # leading words of ``current`` copied from the previous chunk
 
     for word in words:
         wt = _word_tokens(word)
         # A single oversized word still gets its own chunk rather than being dropped.
         if current and current_tokens + wt > chunk_size:
-            chunks.append(" ".join(current))
+            chunks.append((" ".join(current), carried))
             # Seed the next chunk with the trailing ``overlap`` tokens for continuity.
             current, current_tokens = _tail_for_overlap(current, overlap)
+            carried = len(current)
         current.append(word)
         current_tokens += wt
 
     if current:
-        chunks.append(" ".join(current))
+        chunks.append((" ".join(current), carried))
     return chunks
 
 
@@ -80,7 +92,7 @@ def chunk_document(doc: Document, chunk_size: int, overlap: int) -> list[Chunk]:
     """
     body = doc.body or ""
     combined = f"{doc.title}\n\n{body}".strip() if doc.title else body
-    texts = chunk_text(combined, chunk_size=chunk_size, overlap=overlap)
+    texts = chunk_text_with_overlap(combined, chunk_size=chunk_size, overlap=overlap)
 
     # Denormalize the document's neutral semantic metadata onto every chunk so the objective
     # entities/relationships/topics are queryable at the chunk granularity.
@@ -93,13 +105,14 @@ def chunk_document(doc: Document, chunk_size: int, overlap: int) -> list[Chunk]:
     }
 
     chunks: list[Chunk] = []
-    for index, text in enumerate(texts):
+    for index, (text, overlap_words) in enumerate(texts):
         chunks.append(
             Chunk(
                 chunk_id=Chunk.make_id(doc.id, index),
                 document_id=doc.id,
                 index=index,
                 text=text,
+                overlap_words=overlap_words,
                 source_type=doc.source_type,
                 kind=doc.kind,
                 repo=doc.repo,
