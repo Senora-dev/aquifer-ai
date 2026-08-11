@@ -1,4 +1,9 @@
-from aquifer.core.chunking import chunk_document, chunk_text, estimate_tokens
+from aquifer.core.chunking import (
+    chunk_document,
+    chunk_text,
+    chunk_text_with_overlap,
+    estimate_tokens,
+)
 from aquifer.core.models import (
     Document,
     DocumentKind,
@@ -108,3 +113,51 @@ def test_chunk_document_without_semantic_metadata_has_empty_fields():
     assert chunk.summary == ""
     assert chunk.entities == []
     assert chunk.relationships == []
+
+
+def test_chunks_record_their_overlap_with_the_previous_chunk():
+    words = " ".join(f"w{i}" for i in range(200))
+    chunks = chunk_text_with_overlap(words, chunk_size=40, overlap=10)
+    assert chunks[0][1] == 0  # nothing precedes the first chunk
+    for text, overlap_words in chunks[1:]:
+        # Every later chunk is seeded with context, and never with more than it holds.
+        assert 0 < overlap_words < len(text.split())
+
+
+def test_recorded_overlap_matches_the_previous_chunk_tail():
+    words = " ".join(f"word{i:03d}" for i in range(400))
+    chunks = chunk_text_with_overlap(words, chunk_size=60, overlap=15)
+    for (prev_text, _), (text, overlap_words) in zip(chunks, chunks[1:]):
+        assert text.split()[:overlap_words] == prev_text.split()[len(prev_text.split()) - overlap_words:]
+
+
+def test_dropping_the_recorded_overlap_restores_the_original_words():
+    words = [f"w{i}" for i in range(500)]
+    chunks = chunk_text_with_overlap(" ".join(words), chunk_size=50, overlap=12)
+    rebuilt: list[str] = []
+    for position, (text, overlap_words) in enumerate(chunks):
+        parts = text.split()
+        rebuilt.extend(parts[overlap_words:] if position else parts)
+    assert rebuilt == words
+
+
+def test_chunk_text_still_returns_plain_strings():
+    words = " ".join(f"w{i}" for i in range(200))
+    assert chunk_text(words, chunk_size=40, overlap=10) == [
+        text for text, _ in chunk_text_with_overlap(words, chunk_size=40, overlap=10)
+    ]
+
+
+def test_chunk_document_records_overlap_on_each_chunk():
+    doc = Document(
+        id="d",
+        source_type=SourceType.GITHUB,
+        external_id="org/repo#1",
+        kind=DocumentKind.ISSUE,
+        title="t",
+        body=" ".join(f"w{i}" for i in range(300)),
+    )
+    chunks = chunk_document(doc, chunk_size=40, overlap=10)
+    assert len(chunks) > 1
+    assert chunks[0].overlap_words == 0
+    assert all(c.overlap_words > 0 for c in chunks[1:])

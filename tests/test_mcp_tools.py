@@ -125,3 +125,46 @@ def test_before_and_after_query_interceptors_apply():
     assert store.query_args["filters"] == {"tagged": True}
     # ...and after_query reversed the results.
     assert [r["chunk_id"] for r in out] == ["c2", "c1"]
+
+
+def test_get_document_drops_the_overlap_between_chunks():
+    # Chunking seeds each chunk with the tail of the previous one; reassembly must not
+    # emit that shared text twice.
+    sources = [
+        {"text": "alpha beta gamma delta", "title": "T", "url": "u",
+         "source_type": "github", "kind": "issue", "repo": "o/r", "overlap_words": 0},
+        {"text": "gamma delta epsilon zeta", "overlap_words": 2},
+        {"text": "epsilon zeta eta", "overlap_words": 2},
+    ]
+    out = _tools(FakeStore(doc_sources=sources)).get_document("github:o/r:issue:1")
+    assert out["text"] == "alpha beta gamma delta\nepsilon zeta\neta"
+    assert out["chunk_count"] == 3
+
+
+def test_get_document_round_trips_a_chunked_document():
+    from aquifer.core.chunking import chunk_document
+    from aquifer.core.models import Document, DocumentKind
+
+    body = " ".join(f"word{i}" for i in range(600))
+    doc = Document(
+        id="github:o/r:readme:readme",
+        source_type=SourceType.GITHUB,
+        external_id="o/r#readme",
+        kind=DocumentKind.README,
+        repo="o/r",
+        title="o/r README",
+        body=body,
+    )
+    chunks = chunk_document(doc, chunk_size=80, overlap=20)
+    assert len(chunks) > 1
+    sources = [{"text": c.text, "overlap_words": c.overlap_words} for c in chunks]
+
+    out = _tools(FakeStore(doc_sources=sources)).get_document(doc.id)
+    assert out["text"].split() == f"{doc.title}\n\n{body}".split()
+
+
+def test_get_document_joins_chunks_without_overlap_metadata():
+    # Chunks indexed before overlap_words existed carry no such field; they must still join.
+    sources = [{"text": "first", "title": "Bug"}, {"text": "second"}]
+    out = _tools(FakeStore(doc_sources=sources)).get_document("d")
+    assert out["text"] == "first\nsecond"

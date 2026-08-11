@@ -19,6 +19,23 @@ class AuthorizationError(Exception):
     """Raised when the interceptor pipeline denies an action."""
 
 
+def _join_chunk_texts(sources: list[dict]) -> str:
+    """Concatenate a document's ordered chunks, dropping the overlap they share.
+
+    Chunking seeds each chunk with the tail of its predecessor, so joining the texts as-is
+    repeats that tail once per boundary. ``overlap_words`` records how many leading words are
+    a repeat; chunks written before it existed default to 0 and join as before.
+    """
+    parts: list[str] = []
+    for position, source in enumerate(sources):
+        text = source.get("text", "")
+        overlap = source.get("overlap_words") or 0
+        if position and overlap > 0:
+            text = " ".join(text.split()[overlap:])
+        parts.append(text)
+    return "\n".join(parts)
+
+
 class ContextTools:
     def __init__(
         self,
@@ -73,7 +90,7 @@ class ContextTools:
             "source_type": head.get("source_type"),
             "kind": head.get("kind"),
             "repo": head.get("repo"),
-            "text": "\n".join(s.get("text", "") for s in sources),
+            "text": _join_chunk_texts(sources),
             "chunk_count": len(sources),
         }
 

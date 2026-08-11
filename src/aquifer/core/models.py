@@ -148,6 +148,9 @@ class Chunk(BaseModel):
     index: int
     text: str
     embedding: list[float] | None = None
+    # How many leading words of ``text`` repeat the tail of the previous chunk. Reassembling a
+    # document drops them so the shared context is not emitted twice.
+    overlap_words: int = 0
 
     # Denormalized from the parent document for filtering / display.
     source_type: SourceType
