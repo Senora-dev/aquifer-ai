@@ -127,8 +127,9 @@ def test_chunks_record_their_overlap_with_the_previous_chunk():
 def test_recorded_overlap_matches_the_previous_chunk_tail():
     words = " ".join(f"word{i:03d}" for i in range(400))
     chunks = chunk_text_with_overlap(words, chunk_size=60, overlap=15)
-    for (prev_text, _), (text, overlap_words) in zip(chunks, chunks[1:]):
-        assert text.split()[:overlap_words] == prev_text.split()[len(prev_text.split()) - overlap_words:]
+    for (prev_text, _), (text, overlap_words) in zip(chunks, chunks[1:], strict=False):
+        prev_words = prev_text.split()
+        assert text.split()[:overlap_words] == prev_words[len(prev_words) - overlap_words :]
 
 
 def test_dropping_the_recorded_overlap_restores_the_original_words():
