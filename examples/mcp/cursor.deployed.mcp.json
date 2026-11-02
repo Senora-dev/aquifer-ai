@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "aquifer": {
+      "url": "${env:AQUIFER_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer ${env:AQUIFER_MCP_TOKEN}"
+      }
+    }
+  }
+}

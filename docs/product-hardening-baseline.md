@@ -124,3 +124,20 @@ error/retry paths, deletion, CDK synthesis, end-to-end retrieval quality.
 
 Architecture that already works (interfaces, factory, interceptor seam, single CDK stack,
 SQS fan-out) is kept as is.
+
+## 7. Final results (end of `feature/engineering-context-v1`)
+
+| Check | Baseline | Final |
+| --- | --- | --- |
+| `pytest -q` | 87 passed | 196 passed (incl. 17 CDK synth tests, real-HTTP MCP auth tests) |
+| `ruff check src tests scripts infrastructure` | 2 errors | 0 |
+| MCP server import / container start | fails (`mcp` 2.x) | builds; refuses to start without tokens; serves MCP with a token (verified with `docker run --read-only`) |
+| CDK synth | untested | tested (security properties asserted) |
+| Retrieval benchmark (offline) | not runnable | 43 passed / 0 failed / 2 skipped (LLM-only) of 45 |
+| `pip-audit` (runtime deps) | — | no known vulnerabilities (only the local venv's `pip` tool was flagged; CI upgrades it) |
+| Live AWS deployment | not run | not run (no deployment authorized) |
+
+Defects B1–B19, R1–R9 and S1–S8 above are addressed by this release except where
+`docs/security.md` and the README "Current limitations" state otherwise (notably: deleted
+issues/PRs are not detected; one trust domain per deployment; plain TCP listener unless a
+certificate is configured). Benchmark details: `docs/benchmark.md`.

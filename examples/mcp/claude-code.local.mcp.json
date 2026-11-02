@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "aquifer": {
+      "type": "stdio",
+      "command": "${AQUIFER_HOME}/.venv/bin/python",
+      "args": [
+        "-m", "aquifer.local", "serve",
+        "--store", "${AQUIFER_HOME}/.aquifer-local/index.json",
+        "--repos-root", "${AQUIFER_HOME}/examples/demo/repos"
+      ]
+    }
+  }
+}

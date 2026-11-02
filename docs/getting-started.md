@@ -1,132 +1,74 @@
 # Getting Started
 
-This guide walks a platform engineer through deploying the Aquifer.ai stack into an AWS account.
-Aquifer runs entirely in your VPC against your own Amazon Bedrock — you are deploying
-infrastructure you own and operate, not signing up for a service.
+There are two ways to run Aquifer:
 
-## Prerequisites
-
-| Requirement | Notes |
-| --- | --- |
-| **AWS account + credentials** | Permissions to create VPC, OpenSearch Serverless, Lambda, ECS/Fargate, SQS, S3, Secrets Manager, IAM. Configure with `aws configure`. |
-| **AWS CLI v2** | Used for credentials and post-deploy steps. |
-| **Node.js 20 or 22** | Required by the AWS CDK Toolkit CLI. |
-| **Python 3.11+** | Runtime for the CDK app and the package. |
-| **Docker (running)** | CDK bundles the Lambda code and builds the MCP image locally at deploy time. |
-| **Amazon Bedrock model access** | Enable the embedding model (Titan Text Embeddings v2) and the inference model (a Claude model) in your target region. |
-
-## 1. Install
-
-```bash
-git clone <your-fork-or-mirror> aquifer && cd aquifer
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,cdk]"        # package + tooling + CDK libraries
-npm install -g aws-cdk             # or use: npx cdk ...
-```
-
-Verify the toolchain:
-
-```bash
-cdk --version
-python -c "import aws_cdk; print('cdk libs OK')"
-```
-
-## 2. Bootstrap the environment
-
-CDK needs a one-time bootstrap per account/region:
-
-```bash
-export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-export CDK_DEFAULT_REGION=us-east-1     # your target region
-cd infrastructure
-cdk bootstrap
-```
-
-## 3. Review configuration
-
-Deploy-time configuration is passed as CDK context; runtime configuration is injected as
-`AQUIFER_*` environment variables by the stack. The most common context keys:
-
-| Context key | Default | Purpose |
+| | Local mode | AWS deployment |
 | --- | --- | --- |
-| `repos` | `[]` | JSON array of GitHub `org/repo` entries to ingest |
-| `index` | `aquifer-context` | OpenSearch index name |
-| `model_id` | `amazon.titan-embed-text-v2:0` | Embedding model id |
+| Needs | Python 3.11+ | AWS account, Bedrock model access, Docker, Node.js, CDK |
+| Sources | Repository directories on disk | GitHub repositories |
+| Embeddings | Lexical hashing embedder (deterministic, not semantic) | Amazon Titan Text Embeddings v2 |
+| Extraction | Deterministic parsers only (unless `--bedrock`) | Deterministic parsers + LLM on your Bedrock |
+| Index | JSON file | OpenSearch Serverless (VPC-only) |
+| MCP transport | stdio (or loopback HTTP) | Streamable HTTP + bearer token, internal NLB |
+| Cost | Free | See [operations.md](./operations.md#cost) |
 
-Runtime settings (region, semantic-indexing model, chunk sizes, etc.) have sensible defaults and
-can be overridden via environment variables on the Lambda/Fargate tasks; see
-`aquifer/core/config.py`.
+Local mode runs the same pipeline, extractors and MCP tool code as a deployment. Use it to
+evaluate Aquifer, develop, and demo; use the AWS deployment for real repositories and semantic
+search.
 
-## 4. Deploy
-
-```mermaid
-flowchart LR
-    A[cdk bootstrap] --> B[cdk synth]
-    B --> C[cdk deploy -c repos=...]
-    C --> D[Put source token<br/>in Secrets Manager]
-    D --> E[Discovery runs<br/>on schedule]
-    E --> F[Connect agent<br/>to internal MCP NLB]
-```
+## Local mode
 
 ```bash
-# from infrastructure/
-cdk synth                                   # optional: inspect the template
-cdk deploy -c repos='["your-org/your-repo"]'
+git clone https://github.com/Senora-dev/aquifer-ai.git && cd aquifer-ai
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Index every repository directory under a root (re-run any time; unchanged files are skipped)
+python -m aquifer.local ingest examples/demo/repos
+# → indexed=17 unchanged=0 failed=0 deleted=0 store=.aquifer-local/index.json
 ```
 
-Deploying builds the Lambda bundle and the MCP container image (Docker must be running) and
-provisions the full stack. On completion, CloudFormation prints these outputs:
-
-- `McpEndpoint` — internal NLB DNS for the MCP API (reachable only inside the VPC)
-- `CollectionEndpoint` — OpenSearch Serverless endpoint
-- `IngestQueueUrl` — the ingestion SQS queue
-- `GitHubTokenSecretArn` — the Secrets Manager secret to populate next
-
-## 5. Provide the source credential
-
-Store your GitHub token (a fine-grained PAT with read access to the target repos) in the created
-secret:
+Serve it to an MCP client over stdio (the client starts the process):
 
 ```bash
-aws secretsmanager put-secret-value \
-  --secret-id <GitHubTokenSecretArn> \
-  --secret-string 'ghp_xxxxxxxxxxxxxxxxxxxx'
+python -m aquifer.local serve --repos-root examples/demo/repos
 ```
 
-## 6. Run ingestion
-
-The Discovery Lambda runs on a schedule (every 15 minutes by default). To start immediately,
-invoke it once:
+or over loopback HTTP at `http://127.0.0.1:8080/mcp` (no auth, loopback only):
 
 ```bash
-aws lambda invoke --function-name <AquiferStack-IngestionDiscovery...> /dev/stdout
+python -m aquifer.local serve --repos-root examples/demo/repos --transport http
 ```
 
-It enumerates the configured repositories, fans fetch jobs onto SQS, and the Worker Lambda
-performs semantic indexing, embedding, and upsert into OpenSearch.
+Connect a client: [agent-integration.md](./agent-integration.md). Guided demo:
+[../examples/demo/README.md](../examples/demo/README.md).
 
-## 7. Connect an agent
+### Your own repositories
 
-The MCP API is exposed on an **internal** load balancer. Point an MCP-capable agent running
-inside the VPC (or a peered/VPN-connected network) at the `McpEndpoint` over HTTP/SSE. The agent
-can then call `search_context`, `find_related`, `list_entities`, and the other tools described in
-[concepts.md](./concepts.md).
+Point `ingest` at a directory whose subdirectories are repository checkouts. Files matching the
+default globs (Terraform, docker-compose, Backstage descriptors, ADRs) and the README are
+indexed. For each repository you may add `.aquifer/source.json`:
 
-## 8. Tear down
+```json
+{"repo": "your-org/your-repo", "url_base": "https://github.com/your-org/your-repo"}
+```
+
+`revision` is read from `git rev-parse HEAD` for git checkouts (or from `source.json`); without
+either, it is reported as unknown rather than guessed. Issues/PRs can be supplied as
+`.aquifer/issues.json` / `.aquifer/pulls.json` fixtures (see the demo repositories).
+
+`--bedrock` switches local mode to Bedrock embeddings and LLM extraction (uses your AWS
+credentials and costs money).
+
+## AWS deployment
+
+See [deployment.md](./deployment.md). In short:
 
 ```bash
-cd infrastructure
-cdk destroy
+pip install -e ".[dev,cdk]" && npm install -g aws-cdk
+python scripts/preflight.py --region <region> --repos your-org/your-repo
+cd infrastructure && cdk bootstrap && cdk deploy -c repos='["your-org/your-repo"]'
 ```
-
-## Troubleshooting
-
-- **Docker errors during deploy** — ensure the Docker daemon is running; CDK bundles assets in
-  containers.
-- **`AccessDeniedException` from Bedrock** — enable model access for both the embedding and
-  inference models in your region.
-- **No results from the MCP API** — confirm the secret is populated and that the Worker Lambda
-  has run (check its logs and the SQS/DLQ depth).
 
 ---
 

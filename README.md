@@ -1,161 +1,209 @@
-<h1 align="center">Aquifer AI</h1>
+<h1 align="center">Aquifer — Engineering Context for AI Agents</h1>
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Senora-dev/aquifer-ai-assets/main/logo.png" alt="Aquifer AI logo" width="90">
 </p>
 
-An open-source, **in-VPC Context Lake** — neutral **infrastructure for AI agents**, not a
-developer portal and not a reasoning engine. Aquifer is headless: it aggregates engineering
-context (GitHub first) into an OpenSearch vector store and exposes a standard **MCP API** that
-AI agents query directly. All inside your own VPC, deployable as a single CDK stack.
+<p align="center"><b>Give AI coding agents reliable, source-backed engineering context before they change your systems.</b></p>
 
-> **Agents are the users; Aquifer stays neutral.** No UI, ever. And no verdicts: Aquifer provides
-> objective, organized context (entities, relationships, keys) and lets the **agent** do the
-> reasoning. We aim to be the best **Search & Retrieval** layer in the industry — not a
-> decision-maker.
+Aquifer is a self-hosted, **source-available** retrieval layer that coding agents query over the
+**Model Context Protocol (MCP)**. It ingests engineering sources (GitHub today), extracts the
+entities and relationships those sources state, and answers questions like *"what depends on
+`billing-api`, and where is that defined?"* with **facts plus their evidence**: repository,
+file path, commit, line range and timestamps — and how each fact was obtained.
 
-## Why
+```text
+# abbreviated find_related output on the demo repositories (deployed, LLM extraction enabled)
+agent> find_related("billing-api", direction="incoming")
 
-AI agents are only as good as the context they can reach. Aquifer is a single, reliable
-**Search & Retrieval** layer over your engineering sources: it ingests, embeds, and—at ingestion
-time—extracts **neutral, objective metadata** (typed entities like `service:billing-api` and
-`jira_key:PROJ-400`, plus factual relationships such as `depends_on`/`references`/`part_of`) and
-indexes it as queryable fields. An agent can then retrieve exactly the context it needs to reason
-on its own — e.g. gather everything related to a service before deciding whether to deploy — with
-zero data leaving your network and **no external AI processing** beyond your own Bedrock.
+orders-service  depends_on  billing-api      explicit_reference   2 sources
+  acme/platform  docker-compose.yml  L6   @a81b5c0   https://github.com/acme/platform/blob/a81b5c0…/docker-compose.yml#L6
+  acme/platform  catalog-info.yaml   L10  @a81b5c0   …
+checkout-service depends_on billing-api      llm_extracted, grounded (text match)
+  acme/payments  issue #12           L2   updated 2024-06-05
+```
 
-Aquifer draws **no conclusions and makes no value judgments**. It does not score, rank by risk,
-or answer "can I deploy?" — it returns the facts; the agent decides.
+It runs in **your** AWS account (a single CDK stack) or entirely on your laptop with no AWS at
+all (local mode).
 
-> **Status:** a functional, neutral Context Lake. It ingests, embeds, and serves context over
-> MCP; **semantic indexing** (in the `before_ingest` hook) extracts objective entities and
-> relationships via a modular per-source prompt registry and indexes them as queryable fields;
-> and the MCP tools let agents search and traverse that metadata.
+## What Aquifer does — and does not do
+
+| Aquifer does | Aquifer does not |
+| --- | --- |
+| Retrieve engineering context by meaning (vector search) and by fact (entities/relationships) | Decide whether a change is safe, rank risk, or recommend actions |
+| Parse explicit references from Terraform, docker-compose and Backstage descriptors, with exact lines | Claim to know every dependency of your system |
+| Use an LLM (your own Bedrock) to extract relationships from prose, and label them as such | Present model-extracted facts as verified |
+| Tell the agent when there is **no evidence** for an answer | Treat "no result" as proof that something does not exist |
+| Track where and when each fact was read (revision, source time, index time) | Promise the index is current with the source at every moment |
+
+**Neutral by design.** Agents are the users. Aquifer organizes facts and their provenance; the
+agent does the reasoning. There are no scores, verdicts or "should" anywhere in the responses.
+
+**Not a developer portal.** There is no UI and no catalog to curate. Aquifer reads what your
+repositories already say (including Backstage descriptors, if you have them) and exposes it to
+agents through a small, stable tool API.
 
 ## MCP tools
 
-Agents reach the lake through five neutral retrieval tools (no verdicts, no interpretation):
+All five tools are read-only. Every result carries `evidence` (repository, path, revision,
+line range, permalink) and freshness fields where the source provides them; fields that are not
+known are omitted or `null`, never guessed.
 
-- `search_context(query, k?, filters?)` — semantic k-NN search with metadata filters.
-- `get_document(document_id)` — a full document, chunks reassembled.
-- `list_sources()` — the configured sources.
-- `find_related(entity, relationship_types?, k?)` — **retrieve relationships**: items whose
-  extracted relationships point at an entity, plus items that reference it, merged and annotated
-  by how they matched.
-- `list_entities(document_id?, entity_type?)` — a neutral **inventory** of the distinct
-  `{type, name}` entities extracted (e.g. services, datastores, Jira keys).
+| Tool | Purpose |
+| --- | --- |
+| `search_context(query, k?, filters?)` | Semantic search; ranked chunks with evidence and freshness |
+| `find_related(entity, relationship_types?, k?, repo?, direction?)` | Relationships to/from an entity, each with origin (`explicit_reference` / `llm_extracted`), support counts and evidence; distinct same-name candidates are listed, never merged; `evidence_status` says when nothing supports an answer |
+| `get_document(document_id, line_start?, line_end?)` | The exact source text, provenance, and an optional line-range excerpt to open evidence |
+| `list_entities(document_id?, entity_type?, k?, repo?)` | Inventory of distinct entities with document counts |
+| `list_sources()` | Configured repositories with indexed document counts and last index time |
 
-## Architecture (baseline)
+Details: [docs/concepts.md](docs/concepts.md). Connecting Claude Code, Cursor or another MCP
+client: [docs/agent-integration.md](docs/agent-integration.md).
 
-- **Vector store:** Amazon OpenSearch Serverless (k-NN vectors)
-- **Compute:** Lambda for ingestion (SQS fan-out), Fargate for the persistent MCP server
-- **Embeddings:** Amazon Bedrock via a VPC (PrivateLink) endpoint
-- **Connectors:** GitHub (issues, PRs, READMEs, discussions); more are additive via the
-  `Connector` interface
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Senora-dev/aquifer-ai-assets/main/architecture.png" alt="Aquifer AI architecture" width="800">
-</p>
-
-## Documentation
-
-Full documentation lives in [`docs/`](./docs):
-
-- [Architecture](./docs/architecture.md) — the single-stack CDK design and pipeline.
-- [Concepts](./docs/concepts.md) — Context Lake, Semantic Indexing, the Neutrality Principle, MCP.
-- [Getting Started](./docs/getting-started.md) — deploy the stack into your AWS account.
-- [Contributing](./docs/contributing.md) — add a `SourceType`/connector or an interceptor.
-
-## Layout
-
-```
-src/aquifer/        # Python package: core, connectors, adapters, ingestion Lambdas, MCP server
-infrastructure/     # AWS CDK (Python) — the single deployable stack
-scripts/            # dev tooling (e.g. the semantic-indexing eval harness)
-tests/              # unit + fixture tests (incl. tests/eval_data/ golden artifacts)
-```
-
-## Tuning semantic indexing
-
-Extraction quality is governed by the modular prompts in `aquifer/semantic/prompts.py`. To tune
-them, run the eval harness over the golden artifacts in `tests/eval_data/` — it prints the
-selected prompt, the generated neutral metadata JSON, and recall against the expected objective
-fields (entity names, relationship targets):
+## Try it in two minutes (no AWS)
 
 ```bash
-python scripts/eval_semantic_index.py            # all examples (calls your own Bedrock)
-python scripts/eval_semantic_index.py --name jira --verbose
+git clone https://github.com/Senora-dev/aquifer-ai.git && cd aquifer-ai
+python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
+
+python -m aquifer.local ingest examples/demo/repos          # three synthetic repositories
+claude mcp add aquifer -- "$PWD/.venv/bin/python" -m aquifer.local serve \
+  --store "$PWD/.aquifer-local/index.json" --repos-root "$PWD/examples/demo/repos"
 ```
 
-The scoring is intentionally neutral — it measures whether we extracted the right *facts*, not
-any judgment. Add more `*.json` examples to `tests/eval_data/` to grow coverage.
+Then ask your agent *"What depends on billing-api, and where is that defined?"*. The guided
+three-minute demo is in [examples/demo/README.md](examples/demo/README.md). Local mode uses a
+lexical (non-semantic) embedder and no LLM, so it shows the deterministic, explicit-reference
+path; see [docs/getting-started.md](docs/getting-started.md).
 
-## Modularity & the enterprise seam
+## How data flows
 
-The core is intentionally lean. Cross-cutting concerns (SSO, RBAC, audit logs) are **not** in
-this baseline — instead, core exposes an `Interceptor` seam (`before/after_ingest`,
-`before/after_query`, `authorize`) with pass-through no-op implementations. Enterprise features
-ship as a separate package that registers interceptors; **core never imports enterprise code**.
+```mermaid
+flowchart LR
+    subgraph VPC["Your AWS account — private subnets"]
+        EB[EventBridge schedule] --> DL[Discovery Lambda]
+        DL -->|fetch jobs| SQS[(SQS + DLQ)]
+        SQS --> WL[Worker Lambda]
+        WL -->|parse Terraform / YAML| WL
+        WL -->|embed + LLM extraction| BR[[Bedrock via VPC endpoint]]
+        WL -->|chunks + metadata + provenance| OS[(OpenSearch Serverless, VPC-only)]
+        MCP[Fargate MCP server] -->|embed query| BR
+        MCP -->|read-only| OS
+        NLB[Internal NLB] --> MCP
+    end
+    GH[GitHub API] -->|HTTPS via NAT| WL
+    AG[Authorized AI agent] -->|MCP + bearer token| NLB
+```
 
-## Quickstart
+1. **Fetch.** The GitHub connector reads READMEs, issues, pull requests and selected files
+   (Terraform, docker-compose, Backstage descriptors, ADRs) from a pinned commit of the default
+   branch. Unchanged content is skipped by content hash.
+2. **Extract.** Deterministic parsers produce `explicit_reference` facts with exact lines. An
+   LLM on your Bedrock extracts relationships from prose; each is checked against the text and
+   marked `grounded` or not.
+3. **Index.** Chunks (exact source slices with line ranges) are embedded and written to
+   OpenSearch Serverless. Updates write a new generation before removing the old one; deleted
+   files, removed READMEs and de-listed repositories are removed from the index.
+4. **Retrieve.** Agents call the MCP tools with a bearer token. Every call is authorized,
+   scoped to the configured repositories, and audit-logged.
 
-Deploy the whole Context Lake into your own AWS account as a single CDK stack. The happy path is
-below; for configuration keys, ingestion details, and troubleshooting see
-[Getting Started](./docs/getting-started.md).
+## What stays in your infrastructure
 
-**Prerequisites**
+- Source content, embeddings, extracted metadata and the index live in your account
+  (OpenSearch Serverless reachable only through a VPC endpoint).
+- Embedding and extraction run on Amazon Bedrock **in the stack's region**, reached through a
+  VPC interface endpoint. If you configure a *cross-region inference profile* as the extraction
+  model (e.g. `us.anthropic…`), Bedrock may process requests in other regions of that geography.
+- There is no Aquifer-operated backend, telemetry, or license server.
 
-- **Docker running** — CDK bundles the Lambda code and builds the MCP image locally at deploy time.
-- **AWS CLI v2**, configured with credentials (`aws configure`).
-- **Amazon Bedrock model access** enabled in your target region for the embedding model
-  (Titan Text Embeddings v2) and an inference (Claude) model.
+**Network dependencies:** outbound HTTPS to `api.github.com` (through the NAT gateway), and
+to ECR and CloudWatch Logs (also through NAT, to avoid extra endpoint costs). Application
+security groups allow outbound TCP 443 only. The MCP endpoint is an internal load balancer —
+it is never exposed to the internet.
 
-**1. Install and bootstrap**
+## Permissions model
+
+Aquifer enforces **one trust domain**: every valid MCP token can read every repository in the
+configured allowlist, and nothing else. Concretely:
+
+- MCP requests require `Authorization: Bearer <token>`; tokens live in Secrets Manager.
+- All tools pass through the interceptor seam (`authorize`, `before_query`, `after_query`) and a
+  core repository scope, so results from outside the allowlist are never returned.
+- Aquifer does **not** mirror GitHub's per-user permissions. Only configure repositories that
+  everyone holding a token may read. Per-principal rules can be added with an interceptor.
+
+See [docs/security.md](docs/security.md) for the full model, prompt-injection handling and
+limitations.
+
+## Sources supported
+
+GitHub: READMEs, issues, pull requests (with merged/open state), and repository files matching
+configurable globs. Deterministic extraction: Terraform (`.tf`), docker-compose, Backstage
+`catalog-info.yaml`. Other connectors can be added through the `Connector` interface
+([docs/contributing.md](docs/contributing.md)).
+
+## Deploying to AWS, and what it costs
 
 ```bash
-pip install -e ".[dev,cdk]"        # package + tooling + CDK libraries
-npm install -g aws-cdk             # CDK Toolkit CLI
-
-export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-export CDK_DEFAULT_REGION=us-east-1     # your target region
-cd infrastructure
-cdk bootstrap                      # one-time per account/region
+pip install -e ".[dev,cdk]" && npm install -g aws-cdk
+python scripts/preflight.py --region eu-west-1 --repos your-org/your-repo   # read-only checks
+cd infrastructure && cdk bootstrap && cdk deploy -c repos='["your-org/your-repo"]'
 ```
 
-**2. Deploy the stack**
+Full guide: [docs/deployment.md](docs/deployment.md). Operations, observability, uninstall and
+troubleshooting: [docs/operations.md](docs/operations.md).
+
+**Idle cost is dominated by OpenSearch Serverless**, which bills a minimum of 2 OCUs while the
+collection exists (1 OCU with `-c aoss_standby_replicas=DISABLED`). At $0.24/OCU-hour (us-east-1)
+that is about **$350/month** (or ~$175 for dev/test) before any traffic. NAT gateway, VPC
+endpoints, the NLB and one small Fargate task add roughly $130/month. Bedrock is usage-based. See
+[docs/operations.md](docs/operations.md#cost) for the breakdown.
+
+## Current limitations
+
+- One trust domain per deployment; no per-user source permissions.
+- GitHub only. Deleted or transferred issues/PRs are not detected (GitHub's incremental API does
+  not report deletions); deleted files, removed READMEs and de-listed repositories are.
+- File provenance is the commit at which the file was read; issue/PR bodies have no revision
+  (their `updated_at` is reported instead).
+- LLM-extracted relationships are only checked for a textual mention of the target, not verified.
+- The MCP listener is plain TCP inside the VPC unless you pass an ACM certificate
+  (`-c mcp_certificate_arn=…`).
+- The benchmark corpus is small and synthetic; it verifies behavior, not real-world accuracy.
+
+## Measuring retrieval quality
 
 ```bash
-cdk deploy -c repos='["your-org/your-repo"]'
+python scripts/benchmark_retrieval.py --out report.json      # offline, deterministic, in CI
+python scripts/benchmark_retrieval.py --bedrock              # with your Bedrock (costs money)
 ```
 
-On completion, CloudFormation prints the stack outputs, including `McpEndpoint` (the internal MCP
-API) and `GitHubTokenSecretArn` (the secret to populate next).
+45 scenario cases (dependencies, Terraform module references, ADRs, similar names, stale and
+deleted sources, missing evidence, repository isolation). Results and caveats:
+[docs/benchmark.md](docs/benchmark.md).
 
-**3. Inject the GitHub token**
+## Project layout
 
-Store a fine-grained PAT with read access to the target repos in the created secret:
-
-```bash
-aws secretsmanager put-secret-value \
-  --secret-id <GitHubTokenSecretArn> \
-  --secret-string 'ghp_xxxxxxxxxxxxxxxxxxxx'
+```
+src/aquifer/        core, connectors, extractors, vector stores, ingestion Lambdas, MCP server,
+                    local mode, benchmark
+infrastructure/     AWS CDK (Python) — the single deployable stack
+scripts/            preflight checks, retrieval benchmark, LLM extraction eval
+tests/              offline tests (incl. CDK synth), benchmark cases, extraction golden data
+examples/           synthetic demo repositories and MCP client configs
+docs/               architecture, concepts, deployment, operations, security, integration
 ```
 
-Discovery runs on a schedule (every 15 minutes by default); ingestion, semantic indexing, and
-embedding then proceed automatically.
+## Contributing
 
-### Security & Architecture Note
-
-By design, Aquifer deploys into an **isolated VPC and exposes no public endpoints** — nothing is
-reachable from the internet, and no data leaves your network. The MCP API is served on an
-**internal** load balancer (`McpEndpoint`), so calling it from `localhost` will not work.
-
-Reach the MCP API from inside the network boundary — for example from an **EC2 bastion** or
-**Cloud9** environment in the VPC, or from your own machine over **Client VPN** or **VPC peering**.
-Point an MCP-capable agent at the `McpEndpoint` over HTTP/SSE and it can call `search_context`,
-`find_related`, `list_entities`, and the other tools.
+Everything can be developed and tested without AWS credentials — see
+[CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md). Changes:
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-**Business Source License 1.1 (BSL 1.1)** — see the [`LICENSE`](LICENSE) file.
-Converts to Apache 2.0 on the Change Date.
+Aquifer is **source-available** under the **Business Source License 1.1** — see
+[`LICENSE`](LICENSE) and [`LICENSE_TERMS.md`](LICENSE_TERMS.md). It is not an OSI-approved open
+source license. The Additional Use Grant permits use, modification and distribution for any
+internal purpose, provided you do not offer it to third parties as a managed service. It
+converts to the Apache License 2.0 on the Change Date stated in `LICENSE` (2029-05-31).

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "aquifer"
 version = "0.1.0"
-description = "Aquifer.ai — an open-source, in-VPC Context Lake with a standard MCP API for AI agents."
+description = "Aquifer — source-available, self-hosted engineering context for AI agents over MCP."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "BSL-1.1" }

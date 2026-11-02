@@ -1,15 +1,19 @@
-# Contributing
+# Extending Aquifer
 
-Aquifer.ai is built to be extended without forking the core. This guide explains the modular
-registry/interceptor pattern and walks through the two most common extensions: adding a new
-**source connector** and adding an **interceptor**.
+Aquifer is built to be extended without forking the core. This guide explains the modular
+interfaces and walks through the common extensions: a **source connector**, an
+**interceptor**, a **structured extractor** and a **vector store**. Development setup and PR
+process: [../CONTRIBUTING.md](../CONTRIBUTING.md).
 
 Two rules govern every contribution:
 
 1. **Neutrality.** Connectors and prompts extract *objective facts only* — entities,
    relationships, keys. No judgments, scores, severities, or verdicts. See
    [concepts.md](./concepts.md#neutrality-principle).
-2. **Lean core.** The core depends on interfaces, never on concrete adapters or enterprise code.
+2. **Provenance is never invented.** Set `path`, `revision`, line numbers and timestamps only
+   from what the source reports; leave them `None` otherwise.
+3. **Lean core.** The core depends on interfaces, never on concrete adapters or optional
+   add-on code.
 
 ## The interfaces
 
@@ -59,7 +63,14 @@ class YourConnector(Connector):
 
 Keep connectors **pure and AWS-free** (use an injectable HTTP client) so they are unit-testable
 without network or cloud access — follow `aquifer/connectors/github.py` as the reference.
-Normalize each item with `Document.make_id(...)` and an appropriate `DocumentKind`.
+Normalize each item with `Document.make_id(...)` and an appropriate `DocumentKind`, and fill the
+provenance fields the source genuinely provides.
+
+To propagate deletions, override `fetch_with_reconciliation` and return a `Reconciliation`
+(scope filters + the complete set of live document ids) **only when the listing is complete** —
+the pipeline deletes indexed documents in that scope that are not live. Classify errors with
+`aquifer.core.errors` (`TransientError`, `RateLimitedError`, `SourceAuthError`,
+`SourceNotFoundError`) so retries and failure isolation work.
 
 **3. Register it in the factory.** Add a branch to `build_connector` in
 `aquifer/ingestion/factory.py` mapping your `SourceType` to the connector.
@@ -83,7 +94,9 @@ on the source-agnostic `Document`/`Chunk` model.
 
 Interceptors are the seam for cross-cutting behavior (e.g. redaction, tenant scoping, and — in
 enterprise builds — RBAC and audit). They are loaded by dotted path from configuration, so the
-core never imports them.
+core never imports them. Interceptors receive the authenticated principal (the MCP token's
+name) in `authorize` and in `QueryContext.principal`, and their `before_query`/`after_query`
+hooks apply to **every** retrieval tool.
 
 ```python
 from aquifer.core.interfaces import Interceptor
@@ -98,22 +111,45 @@ Register it via the `AQUIFER_INTERCEPTORS` environment variable (a JSON array of
 `"module:Class"` paths). They run in order; `authorize` is deny-overrides. The semantic indexer
 itself is just an interceptor — see `aquifer/semantic/interceptor.py` for a complete example.
 
+## Adding a structured extractor
+
+Deterministic extractors live in `aquifer/semantic/structured/` and are dispatched by file path
+in `extract_structured`. An extractor takes the document text and an `EvidenceFactory` and
+returns `SemanticMetadata` whose entities and relationships have `origin="explicit_reference"`
+and evidence built with `ev.span(start, end)` or `ev.lines(a, b)`. Rules:
+
+- Only read keys or syntax the format defines; ignore everything else rather than guessing.
+- Never emit a relationship because two names appear in the same file.
+- Add the file pattern to the default `file_globs` (GitHub and local connectors) if it should be
+  ingested by default, plus golden entries in `tests/benchmark/extraction_golden.json`.
+
+## Adding a vector store
+
+Implement `VectorStore` (`aquifer/core/interfaces.py`) and wire it in
+`aquifer/ingestion/factory.py`. Use `aquifer/vectorstore/schema.py` (`chunk_to_source`,
+`source_to_result`, `validate_filters`) so records and filter semantics match the built-in
+stores. Override the optional methods (`replace_document`, `get_indexed_state`,
+`list_document_ids`, `facet`, `max_value`) for write-then-delete replacement, skip-unchanged,
+deletion propagation and aggregations; `InMemoryVectorStore` is a compact reference.
+
 ## Development workflow
 
 ```bash
-pip install -e ".[dev]"
-pytest                                   # unit + fixture tests (no AWS required)
-ruff check src/aquifer tests scripts     # lint
-python scripts/eval_semantic_index.py    # tune extraction prompts (calls your Bedrock)
-cd infrastructure && cdk synth           # validate the stack
+pip install -e ".[dev]"                          # add ",cdk" + Node.js for CDK synth tests
+pytest -q                                        # unit, integration, MCP and CDK tests (no AWS)
+ruff check src tests scripts infrastructure      # lint
+python scripts/benchmark_retrieval.py            # retrieval benchmark (offline)
+python -m aquifer.local ingest examples/demo/repos   # try changes end to end
+python scripts/eval_semantic_index.py            # tune LLM prompts (calls your Bedrock)
 ```
 
 Please ensure `pytest` and `ruff` pass, and that new behavior is covered by tests that run
-offline (use injected fakes for AWS/LLM clients, as the existing tests do).
+offline (use injected fakes for AWS/LLM clients and the in-memory store, as the existing tests
+do).
 
 ## Licensing
 
-Aquifer.ai is distributed under the Business Source License 1.1 (see `LICENSE` and
+Aquifer is source-available under the Business Source License 1.1 (see `LICENSE` and
 `LICENSE_TERMS.md`). By contributing you agree your contributions are licensed under the same
 terms.
 
