@@ -1,0 +1,9 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: billing-api-v2
+spec:
+  type: service
+  owner: team-legacy
+  dependsOn:
+    - resource:oracle-db

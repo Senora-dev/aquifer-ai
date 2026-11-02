@@ -1,0 +1,7 @@
+services:
+  billing-api-v2:
+    image: acme/billing-api-v2:0.9.7
+    depends_on:
+      - oracle-db
+  oracle-db:
+    image: gvenzl/oracle-free:23

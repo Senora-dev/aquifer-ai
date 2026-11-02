@@ -1,0 +1,10 @@
+services:
+  orders-service:
+    image: acme/orders-service:5.0.2
+    depends_on:
+      - orders-db
+      - billing-api
+  orders-db:
+    image: postgres:16
+  billing-api:
+    image: acme/billing-api:1.42.0

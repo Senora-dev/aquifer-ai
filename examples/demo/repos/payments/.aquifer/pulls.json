@@ -1,0 +1,20 @@
+[
+  {
+    "number": 40,
+    "title": "Move billing-api session cache from memcached to redis",
+    "body": "billing-api now uses redis for its session cache instead of memcached.\nThe memcached cluster can be decommissioned after this ships.",
+    "state": "merged",
+    "created_at": "2024-02-01T10:00:00Z",
+    "updated_at": "2024-02-03T12:00:00Z",
+    "labels": []
+  },
+  {
+    "number": 41,
+    "title": "Proposal: call fraud-check before charging",
+    "body": "Draft: billing-api would call fraud-check synchronously before each charge.\nNot merged; under discussion.",
+    "state": "open",
+    "created_at": "2024-06-01T10:00:00Z",
+    "updated_at": "2024-06-02T08:00:00Z",
+    "labels": ["proposal"]
+  }
+]

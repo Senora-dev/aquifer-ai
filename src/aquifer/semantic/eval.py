@@ -78,8 +78,19 @@ def _recall(found: set[str], expected: set[str]) -> float | None:
     return len(found & expected) / len(expected)
 
 
+def _precision(found: set[str], expected: set[str]) -> float | None:
+    """Fraction of found items that were expected; ``None`` when nothing was found or expected.
+
+    Golden sets list the facts an artifact must yield, not every fact it contains, so this is a
+    lower bound on true precision; items outside the golden set are listed for review.
+    """
+    if not found or not expected:
+        return None
+    return len(found & expected) / len(found)
+
+
 def score_metadata(metadata: SemanticMetadata, golden: dict) -> dict:
-    """Score extracted metadata against the golden objective fields (case-insensitive recall)."""
+    """Score extracted metadata against the golden objective fields (case-insensitive)."""
     found_entities = {e.name.lower() for e in metadata.entities}
     expected_entities = {x.lower() for x in golden.get("entities", [])}
     found_targets = {r.target.lower() for r in metadata.relationships}
@@ -91,6 +102,9 @@ def score_metadata(metadata: SemanticMetadata, golden: dict) -> dict:
         "missing_relationship_targets": sorted(expected_targets - found_targets),
         "found_entities": sorted(found_entities),
         "found_relationship_targets": sorted(found_targets),
+        "entity_precision_lower_bound": _precision(found_entities, expected_entities),
+        "relationship_precision_lower_bound": _precision(found_targets, expected_targets),
+        "unexpected_relationship_targets": sorted(found_targets - expected_targets),
     }
 
 

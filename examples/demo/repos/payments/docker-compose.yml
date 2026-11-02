@@ -1,0 +1,16 @@
+services:
+  billing-api:
+    image: acme/billing-api:1.42.0
+    ports:
+      - "8080:8080"
+    depends_on:
+      - payments-db
+      - redis
+  ledger-service:
+    image: acme/ledger-service:2.3.1
+    depends_on:
+      - payments-db
+  payments-db:
+    image: postgres:16
+  redis:
+    image: redis:7
