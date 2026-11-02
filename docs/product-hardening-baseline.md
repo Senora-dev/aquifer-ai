@@ -129,7 +129,7 @@ SQS fan-out) is kept as is.
 
 | Check | Baseline | Final |
 | --- | --- | --- |
-| `pytest -q` | 87 passed | 196 passed (incl. 17 CDK synth tests, real-HTTP MCP auth tests) |
+| `pytest -q` | 87 passed | 197 passed (incl. 17 CDK synth tests, real-HTTP MCP auth tests) |
 | `ruff check src tests scripts infrastructure` | 2 errors | 0 |
 | MCP server import / container start | fails (`mcp` 2.x) | builds; refuses to start without tokens; serves MCP with a token (verified with `docker run --read-only`) |
 | CDK synth | untested | tested (security properties asserted) |
