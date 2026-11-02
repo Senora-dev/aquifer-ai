@@ -19,6 +19,10 @@ from aquifer.core.models import SourceType
 
 def build_embedder(settings: Settings | None = None) -> Embedder:
     settings = settings or get_settings()
+    if settings.embedding.provider == "hashing":
+        from aquifer.embedding.hashing import HashingEmbedder
+
+        return HashingEmbedder(settings.embedding.dimensions)
     from aquifer.embedding.bedrock import BedrockEmbedder
 
     return BedrockEmbedder(settings.embedding)
@@ -38,8 +42,19 @@ def build_semantic_indexer(settings: Settings | None = None) -> SemanticIndexer:
     return LlmSemanticIndexer(build_inferencer(settings), settings=settings.semantic_index)
 
 
+_memory_stores: dict[str, VectorStore] = {}
+
+
 def build_vector_store(settings: Settings | None = None) -> VectorStore:
     settings = settings or get_settings()
+    if settings.vector_store.backend == "memory":
+        from aquifer.vectorstore.memory import InMemoryVectorStore
+
+        # One store per path per process, so ingestion and the MCP server share data locally.
+        path = settings.vector_store.memory_path
+        if path not in _memory_stores:
+            _memory_stores[path] = InMemoryVectorStore(path or None)
+        return _memory_stores[path]
     from aquifer.vectorstore.opensearch import AossVectorStore
 
     return AossVectorStore(settings.vector_store, settings.embedding.dimensions)
@@ -49,11 +64,12 @@ def build_connector(
     source_type: SourceType | str,
     token: str | None = None,
     settings: Settings | None = None,
+    index_lookup=None,  # noqa: ANN001 - optional skip-unchanged lookup (see GitHubConnector)
 ) -> Connector:
     settings = settings or get_settings()
     source_type = SourceType(source_type)
     if source_type == SourceType.GITHUB:
         from aquifer.connectors.github import GitHubConnector
 
-        return GitHubConnector(settings.github, token=token)
+        return GitHubConnector(settings.github, token=token, index_lookup=index_lookup)
     raise ValueError(f"No connector registered for source type {source_type!r}")

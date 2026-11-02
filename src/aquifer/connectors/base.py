@@ -8,7 +8,9 @@ unit-testable without any AWS dependency.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
+from functools import lru_cache
 
 
 def parse_github_timestamp(value: str | None) -> datetime | None:
@@ -33,3 +35,33 @@ def next_page_cursor(item_count: int, page: int, page_size: int) -> str | None:
 def cursor_to_page(cursor: str | None) -> int:
     """Cursors are 1-based page numbers; ``None`` means the first page."""
     return int(cursor) if cursor else 1
+
+
+@lru_cache(maxsize=256)
+def _glob_regex(pattern: str) -> re.Pattern[str]:
+    """Translate a path glob to a regex: ``**/`` = any directories (including none),
+    ``*`` = any characters except ``/``, ``?`` = one character except ``/``."""
+    out = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out))
+
+
+def path_matches(path: str, globs: list[str] | tuple[str, ...]) -> bool:
+    """Whether a repository-relative ``path`` matches any of ``globs``."""
+    return any(_glob_regex(g).fullmatch(path) for g in globs)

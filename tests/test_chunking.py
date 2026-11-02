@@ -162,3 +162,53 @@ def test_chunk_document_records_overlap_on_each_chunk():
     assert len(chunks) > 1
     assert chunks[0].overlap_words == 0
     assert all(c.overlap_words > 0 for c in chunks[1:])
+
+
+def _file_doc(body, title="cfg.yaml"):
+    return Document(id="d", source_type=SourceType.GITHUB, external_id="e",
+                    kind=DocumentKind.FILE, title=title, body=body)
+
+
+def test_chunks_preserve_formatting_and_reassemble_exactly():
+    from aquifer.core.chunking import combined_text, reassemble
+
+    body = "\n".join(f"key{i}:\n  - value {i}   # comment" for i in range(200))
+    doc = _file_doc(body)
+    chunks = chunk_document(doc, chunk_size=60, overlap=15)
+    assert len(chunks) > 3
+    assert "\n  - value" in chunks[0].text  # line structure kept
+    text, _ = combined_text(doc)
+    assert reassemble([c.model_dump() for c in chunks]) == text
+
+
+def test_reassembly_is_exact_without_overlap():
+    from aquifer.core.chunking import combined_text, reassemble
+
+    doc = _file_doc("a\n\n  b c\td\n" * 50)
+    chunks = chunk_document(doc, chunk_size=10, overlap=0)
+    assert reassemble([c.model_dump() for c in chunks]) == combined_text(doc)[0].strip()
+
+
+def test_chunk_line_ranges_point_into_the_body():
+    body = "\n".join(f"line{i} " + "word " * 20 for i in range(1, 41))
+    chunks = chunk_document(_file_doc(body), chunk_size=80, overlap=10)
+    lines = body.split("\n")
+    for c in chunks:
+        assert c.line_start <= c.line_end
+        # Every word of the chunk lies within the reported body lines.
+        span = "\n".join(lines[c.line_start - 1 : c.line_end])
+        body_part = c.text.split("\n\n", 1)[-1] if c.index == 0 else c.text
+        assert body_part.strip().split()[0] in span
+    assert chunks[0].line_start == 1 and chunks[-1].line_end == 40
+
+
+def test_oversized_token_is_split_below_the_embedding_limit():
+    blob = "A" * 200_000  # e.g. a base64 blob with no whitespace
+    chunks = chunk_document(_file_doc(blob, title=""), chunk_size=800, overlap=100)
+    assert len(chunks) > 1
+    assert max(len(c.text) for c in chunks) <= 800 * 4
+
+
+def test_title_only_chunk_has_no_line_range():
+    chunks = chunk_document(_file_doc("", title="Only a title"), chunk_size=100, overlap=10)
+    assert chunks[0].line_start is None
