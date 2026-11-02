@@ -1,8 +1,12 @@
 """The OpenSearch Serverless vector collection and its policies.
 
 Creates a VECTORSEARCH collection reachable only through a VPC endpoint (no public access),
-plus the encryption, network, and data-access policies AOSS requires. Data-access is granted
-to the ingestion and MCP roles via :meth:`grant_data_access`, called once their roles exist.
+plus the encryption, network, and data-access policies AOSS requires. Data access is granted
+via :meth:`grant_data_access` once the consuming roles exist: ingestion roles may create/update
+the index and write documents; the MCP role may only describe the index and read documents.
+
+Cost note: an OpenSearch Serverless collection bills a minimum number of OCUs while it exists,
+even with no traffic (2 OCUs with standby replicas, 1 OCU without). See docs/operations.md.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ class VectorStore(Construct):
         vpc: ec2.IVpc,
         security_group: ec2.ISecurityGroup,
         collection_name: str = "aquifer",
+        standby_replicas: str = "ENABLED",
     ) -> None:
         super().__init__(scope, construct_id)
         self.collection_name = collection_name
@@ -82,9 +87,10 @@ class VectorStore(Construct):
             name=collection_name,
             type="VECTORSEARCH",
             description="Aquifer Context Lake vector collection",
+            standby_replicas=standby_replicas,
         )
-        self.collection.add_dependency(encryption_policy)
-        self.collection.add_dependency(network_policy)
+        self.collection.add_resource_dependency(encryption_policy)
+        self.collection.add_resource_dependency(network_policy)
 
     @property
     def endpoint(self) -> str:
@@ -94,9 +100,11 @@ class VectorStore(Construct):
     def collection_arn(self) -> str:
         return self.collection.attr_arn
 
-    def grant_data_access(self, principal_arns: list[str]) -> None:
-        """Create the AOSS data-access policy granting index access to the given roles."""
+    def grant_data_access(self, writer_arns: list[str], reader_arns: list[str]) -> None:
+        """Create the AOSS data-access policy: least privilege per role."""
         stack = Stack.of(self)
+        index = [f"index/{self.collection_name}/*"]
+        collection = [f"collection/{self.collection_name}"]
         aoss.CfnAccessPolicy(
             self,
             "DataAccessPolicy",
@@ -105,20 +113,38 @@ class VectorStore(Construct):
             policy=stack.to_json_string(
                 [
                     {
+                        "Description": "Ingestion: manage the index and write documents",
                         "Rules": [
                             {
                                 "ResourceType": "index",
-                                "Resource": [f"index/{self.collection_name}/*"],
-                                "Permission": ["aoss:*"],
+                                "Resource": index,
+                                "Permission": [
+                                    "aoss:CreateIndex",
+                                    "aoss:DescribeIndex",
+                                    "aoss:UpdateIndex",
+                                    "aoss:ReadDocument",
+                                    "aoss:WriteDocument",
+                                ],
                             },
                             {
                                 "ResourceType": "collection",
-                                "Resource": [f"collection/{self.collection_name}"],
-                                "Permission": ["aoss:*"],
+                                "Resource": collection,
+                                "Permission": ["aoss:DescribeCollectionItems"],
                             },
                         ],
-                        "Principal": principal_arns,
-                    }
+                        "Principal": writer_arns,
+                    },
+                    {
+                        "Description": "MCP server: read-only",
+                        "Rules": [
+                            {
+                                "ResourceType": "index",
+                                "Resource": index,
+                                "Permission": ["aoss:DescribeIndex", "aoss:ReadDocument"],
+                            },
+                        ],
+                        "Principal": reader_arns,
+                    },
                 ]
             ),
         )

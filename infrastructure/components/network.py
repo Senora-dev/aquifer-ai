@@ -1,8 +1,17 @@
 """Networking: the VPC and the private connectivity all other constructs share.
 
-Everything runs in private subnets. A single NAT gateway provides egress to GitHub and ECR;
-Bedrock, Secrets Manager, SQS, and S3 are reached over VPC endpoints so that traffic — and all
-ingested context — stays on the AWS network rather than traversing the internet.
+Everything runs in private subnets. A single NAT gateway provides HTTPS egress to GitHub (and to
+ECR / CloudWatch Logs, which have no endpoints here to avoid their fixed hourly cost); Bedrock,
+Secrets Manager and SQS are reached over interface endpoints and S3 over a free gateway
+endpoint, so that traffic — and all ingested context sent to Bedrock — stays on the AWS network.
+
+Security groups are split by role:
+
+- ``endpoint_sg``: interface endpoints and the OpenSearch Serverless endpoint; accepts HTTPS
+  from inside the VPC only.
+- ``ingestion_sg``: the Lambdas; no inbound; outbound TCP 443 only.
+- ``mcp_sg``: the Fargate MCP tasks; inbound only on the container port (added by the MCP
+  construct); outbound TCP 443 only.
 """
 
 from __future__ import annotations
@@ -32,14 +41,14 @@ class Network(Construct):
             ],
         )
 
-        # Shared security group for the Lambdas, the Fargate tasks, and the VPC endpoints.
-        self.app_sg = ec2.SecurityGroup(
-            self,
-            "AppSecurityGroup",
-            vpc=self.vpc,
-            description="Aquifer application components",
-            allow_all_outbound=True,
+        self.endpoint_sg = self._sg("EndpointSecurityGroup", "Aquifer VPC endpoints")
+        self.endpoint_sg.add_ingress_rule(
+            ec2.Peer.ipv4(self.vpc.vpc_cidr_block), ec2.Port.tcp(443), "HTTPS from the VPC"
         )
+        self.ingestion_sg = self._sg("IngestionSecurityGroup", "Aquifer ingestion Lambdas")
+        self.mcp_sg = self._sg("McpSecurityGroup", "Aquifer MCP server tasks")
+        for sg in (self.ingestion_sg, self.mcp_sg):
+            sg.add_egress_rule(ec2.Peer.any_ipv4(), ec2.Port.tcp(443), "HTTPS only")
 
         # Keep Bedrock / Secrets / SQS traffic on PrivateLink.
         for name, service in (
@@ -48,13 +57,21 @@ class Network(Construct):
             ("Sqs", ec2.InterfaceVpcEndpointAwsService.SQS),
         ):
             self.vpc.add_interface_endpoint(
-                name, service=service, security_groups=[self.app_sg]
+                name, service=service, security_groups=[self.endpoint_sg], open=False
             )
 
-        # S3 (Lambda state bucket) over a free gateway endpoint.
-        self.vpc.add_gateway_endpoint(
-            "S3", service=ec2.GatewayVpcEndpointAwsService.S3
+        # S3 (Lambda state bucket, ECR image layers) over a free gateway endpoint.
+        self.vpc.add_gateway_endpoint("S3", service=ec2.GatewayVpcEndpointAwsService.S3)
+
+    def _sg(self, construct_id: str, description: str) -> ec2.SecurityGroup:
+        return ec2.SecurityGroup(
+            self, construct_id, vpc=self.vpc, description=description, allow_all_outbound=False
         )
+
+    @property
+    def app_sg(self) -> ec2.SecurityGroup:
+        """Backwards-compatible alias (the original single shared group)."""
+        return self.ingestion_sg
 
     @property
     def private_subnets(self) -> ec2.SubnetSelection:
