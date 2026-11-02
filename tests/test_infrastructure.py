@@ -154,3 +154,15 @@ def test_inference_profile_arns():
     arns = bedrock_model_arns("us.anthropic.claude-x-v1:0", "us-east-1", "123")
     assert arns[0] == "arn:aws:bedrock:us-east-1:123:inference-profile/us.anthropic.claude-x-v1:0"
     assert arns[1] == "arn:aws:bedrock:*::foundation-model/anthropic.claude-x-v1:0"
+
+
+def test_queues_and_bucket_are_encrypted_and_tls_only(resources):
+    queues = _of_type(resources, "AWS::SQS::Queue")
+    assert queues and all(q["Properties"].get("SqsManagedSseEnabled") for q in queues)
+    bucket = _of_type(resources, "AWS::S3::Bucket")[0]
+    assert bucket["Properties"]["BucketEncryption"]
+    policies = json.dumps(_of_type(resources, "AWS::S3::BucketPolicy"))
+    assert "aws:SecureTransport" in policies
+    enc = [r for r in _of_type(resources, "AWS::OpenSearchServerless::SecurityPolicy")
+           if r["Properties"]["Type"] == "encryption"]
+    assert enc

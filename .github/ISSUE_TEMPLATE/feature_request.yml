@@ -1,0 +1,17 @@
+name: Feature request
+description: Propose an improvement to retrieval, extraction, connectors or operations
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you (or your agent) trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: |
+        Aquifer returns neutral, source-backed facts. Proposals that add scores, risk
+        assessments or recommendations belong in the agent, not in Aquifer.
