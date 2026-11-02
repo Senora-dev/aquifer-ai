@@ -34,7 +34,7 @@ class StackConfig:
     embedding_model_id: str = DEFAULT_EMBEDDING_MODEL_ID
     extraction_model_id: str = DEFAULT_EXTRACTION_MODEL_ID
     semantic_index_enabled: bool = True
-    # CIDRs allowed to reach the MCP listener. Empty = the VPC CIDR only.
+    # Extra private CIDRs allowed to reach the MCP listener (the VPC CIDR is always allowed).
     mcp_allowed_cidrs: list[str] = field(default_factory=list)
     # ACM certificate for a TLS listener (443). Without it the listener is plain TCP/80 inside
     # the VPC and bearer tokens cross the VPC network unencrypted.

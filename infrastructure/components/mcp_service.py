@@ -1,7 +1,8 @@
 """The MCP server: a Fargate service behind an internal Network Load Balancer.
 
-The service runs the image built from ``Dockerfile.mcp`` and is reachable only from inside the
-VPC (or the CIDRs passed as ``mcp_allowed_cidrs``). Every request must carry a bearer token; the
+The service runs the image built from ``Dockerfile.mcp``. The internal NLB has its own security
+group admitting only the VPC CIDR plus any ``mcp_allowed_cidrs``; tasks accept traffic only from
+that load balancer. Every request must carry a bearer token; the
 token map is generated into Secrets Manager at deploy time and injected into the container as a
 secret (never as plaintext in the task definition or in stack outputs).
 
@@ -86,13 +87,24 @@ class McpService(Construct):
             iam.PolicyStatement(actions=["aoss:APIAccessAll"], resources=[collection_arn])
         )
 
-        # The NLB has no security group, so client IPs reach the tasks directly: admit only the
-        # VPC (default) or the explicitly configured private CIDRs.
-        peers = allowed_cidrs or [vpc.vpc_cidr_block]
-        for cidr in peers:
-            security_group.add_ingress_rule(
-                ec2.Peer.ipv4(cidr), ec2.Port.tcp(_CONTAINER_PORT), "MCP clients"
+        # Client filtering happens on the load balancer's own security group: with IP targets,
+        # NLB does not preserve client IPs by default, so rules on the task security group
+        # would only ever see the NLB. Tasks accept traffic solely from the NLB.
+        self.nlb_sg = ec2.SecurityGroup(
+            self, "NlbSecurityGroup", vpc=vpc, description="Aquifer MCP load balancer",
+            allow_all_outbound=False,
+        )
+        listener_port = 443 if certificate_arn else 80
+        for cidr in [vpc.vpc_cidr_block, *(allowed_cidrs or [])]:
+            self.nlb_sg.add_ingress_rule(
+                ec2.Peer.ipv4(cidr), ec2.Port.tcp(listener_port), "MCP clients"
             )
+        self.nlb_sg.add_egress_rule(
+            security_group, ec2.Port.tcp(_CONTAINER_PORT), "to MCP tasks (traffic + health checks)"
+        )
+        security_group.add_ingress_rule(
+            self.nlb_sg, ec2.Port.tcp(_CONTAINER_PORT), "from the MCP load balancer only"
+        )
 
         self.service = ecs.FargateService(
             self,
@@ -106,7 +118,8 @@ class McpService(Construct):
         )
 
         self.nlb = elbv2.NetworkLoadBalancer(
-            self, "Nlb", vpc=vpc, internet_facing=False, vpc_subnets=subnets
+            self, "Nlb", vpc=vpc, internet_facing=False, vpc_subnets=subnets,
+            security_groups=[self.nlb_sg],
         )
         if certificate_arn:
             self.scheme, port = "https", 443

@@ -166,3 +166,15 @@ def test_queues_and_bucket_are_encrypted_and_tls_only(resources):
     enc = [r for r in _of_type(resources, "AWS::OpenSearchServerless::SecurityPolicy")
            if r["Properties"]["Type"] == "encryption"]
     assert enc
+
+
+def test_mcp_tasks_only_accept_traffic_from_the_load_balancer(resources):
+    t = _synth(mcp_allowed_cidrs="10.200.0.0/16")
+    res = t.to_json()["Resources"]
+    lb = _of_type(res, "AWS::ElasticLoadBalancingV2::LoadBalancer")[0]
+    assert lb["Properties"]["SecurityGroups"]
+    ingress = [r["Properties"] for r in _of_type(res, "AWS::EC2::SecurityGroupIngress")]
+    to_tasks = [r for r in ingress if r.get("FromPort") == 8080]
+    assert to_tasks and all("SourceSecurityGroupId" in r for r in to_tasks)
+    lb_sg_rules = json.dumps(_of_type(res, "AWS::EC2::SecurityGroup"))
+    assert "10.200.0.0/16" in lb_sg_rules

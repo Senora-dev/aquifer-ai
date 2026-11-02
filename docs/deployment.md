@@ -87,7 +87,7 @@ what to change.
 | `extraction_model_id` | see above | LLM for extraction from prose |
 | `semantic_index_enabled` | `true` | `false` disables LLM extraction (no Claude calls) |
 | `aoss_standby_replicas` | `ENABLED` | `DISABLED` halves the OpenSearch idle floor (dev/test only; no redundancy) |
-| `mcp_allowed_cidrs` | VPC CIDR | Extra private CIDRs (VPN, peered VPC) allowed to reach the MCP listener. `0.0.0.0/0` is rejected. |
+| `mcp_allowed_cidrs` | — (VPC CIDR only) | Extra private CIDRs (VPN, peered VPC) allowed to reach the MCP listener, in addition to the VPC CIDR. `0.0.0.0/0` is rejected. |
 | `mcp_certificate_arn` | — | ACM certificate ARN → TLS listener on 443 instead of TCP/80 |
 | `worker_max_concurrency` | `5` | Upper bound on parallel ingestion workers (GitHub/Bedrock rate) |
 | `schedule_minutes` | `15` | Discovery interval |

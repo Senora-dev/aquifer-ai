@@ -15,7 +15,7 @@ is allowed to read; run separate deployments for separate trust domains.
 | Control | How it is enforced | Tested in |
 | --- | --- | --- |
 | No unauthenticated MCP access | Every HTTP request needs `Authorization: Bearer <token>` (constant-time compare, tokens ≥ 32 chars). The server refuses to start without tokens; unauthenticated mode is only accepted on a loopback bind. | `tests/test_mcp_server.py` (real HTTP + MCP client), CI image check |
-| No public endpoint | Internal NLB; MCP security group admits only the VPC CIDR or explicitly configured private CIDRs (`0.0.0.0/0` rejected at synth) | `tests/test_infrastructure.py` |
+| No public endpoint | Internal NLB with its own security group admitting only the VPC CIDR and explicitly configured private CIDRs (`0.0.0.0/0` rejected at synth); tasks accept traffic only from the NLB | `tests/test_infrastructure.py` |
 | Consistent authorization | All five tools run `authorize → before_query → repository scope → store → after_query → audit`. (Before this release three tools skipped the query hooks.) | `tests/test_mcp_tools.py`, `tests/test_mcp_reasoning_tools.py` |
 | No cross-source leaks | Queries are always filtered to the allowlist; results outside it are dropped again after retrieval; out-of-scope documents are indistinguishable from missing ones. De-listed repositories are purged from the index by discovery. | same, `tests/test_discovery.py` |
 | Input validation | Filter fields restricted to an allowlist, values must be scalars (no query-DSL passthrough), `k` bounded | `tests/test_mcp_tools.py`, `tests/test_opensearch.py` |
