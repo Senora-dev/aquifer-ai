@@ -10,8 +10,21 @@ from __future__ import annotations
 
 from aquifer.core.config import SemanticIndexSettings, get_settings
 from aquifer.core.interfaces import Inferencer, SemanticIndexer
-from aquifer.core.models import Document, SemanticMetadata
-from aquifer.semantic.prompts import SEMANTIC_SCHEMA, PromptRegistry, default_registry
+from aquifer.core.models import (
+    Document,
+    Entity,
+    Relationship,
+    RelationshipOrigin,
+    SemanticMetadata,
+)
+from aquifer.semantic.prompts import (
+    SEMANTIC_SCHEMA,
+    LlmSemanticOutput,
+    PromptRegistry,
+    default_registry,
+)
+
+_LLM = RelationshipOrigin.LLM_EXTRACTED.value
 
 
 class LlmSemanticIndexer(SemanticIndexer):
@@ -29,4 +42,15 @@ class LlmSemanticIndexer(SemanticIndexer):
         template = self.registry.select(document.source_type, document.kind)
         user = template.render_user(document, self.settings.max_input_chars)
         data = self.inferencer.infer_json(template.system, user, schema=SEMANTIC_SCHEMA)
-        return SemanticMetadata.model_validate(data)
+        out = LlmSemanticOutput.model_validate(data)
+        # Everything from the model is labelled llm_extracted, whatever it claimed.
+        return SemanticMetadata(
+            summary=out.summary,
+            entities=[Entity(type=e.type, name=e.name, origin=_LLM) for e in out.entities],
+            topics=out.topics,
+            relationships=[
+                Relationship(type=r.type, target=r.target, source=r.source or None,
+                             description=r.description, origin=_LLM)
+                for r in out.relationships
+            ],
+        )

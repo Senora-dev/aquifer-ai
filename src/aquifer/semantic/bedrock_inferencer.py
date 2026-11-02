@@ -42,8 +42,17 @@ class BedrockInferencer(Inferencer):
     def client(self) -> Any:
         if self._client is None:
             import boto3
+            from botocore.config import Config
 
-            self._client = boto3.client("bedrock-runtime", region_name=self._settings.region)
+            # Standard retry mode: bounded exponential backoff with jitter on throttling/5xx.
+            config = Config(
+                retries={"mode": "standard", "max_attempts": 6},
+                read_timeout=120,
+                connect_timeout=10,
+            )
+            self._client = boto3.client(
+                "bedrock-runtime", region_name=self._settings.region, config=config
+            )
         return self._client
 
     def infer_json(self, system: str, user: str, schema: dict | None = None) -> dict:
