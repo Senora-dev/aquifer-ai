@@ -60,7 +60,8 @@ AI agent.
   follow instructions inside it. The model's output is parsed through a schema without
   provenance fields, so it cannot label its own output as an explicit reference; every
   LLM-extracted relationship is labelled `llm_extracted` and checked against the text
-  (`grounded`).
+  (`quote_verified`, `mention_found`), and gets a `status` derived from the document context —
+  model output can never become `current`.
 - **At retrieval:** the MCP server instructions, tool descriptions and a `notice` field on
   document and relationship responses tell the calling agent that text, summaries and snippets
   are source data, not instructions. Aquifer never executes or follows retrieved content.

@@ -14,7 +14,10 @@ contain identifiers and counts only — never document bodies, queries or creden
 | `reconciled` | worker | Deletions propagated for a scope (`deleted` count) |
 | `repository_renamed` | worker | A configured repository now redirects to a new name — update `repos` |
 | `files_capped`, `file_too_large`, `tree_truncated` | worker | File selection limits were hit (see config) |
-| `semantic_extraction_failed` | worker | LLM extraction failed permanently for a document; recorded as `extraction_status=failed` and retried on next fetch |
+| `semantic_extraction_failed` | worker | LLM extraction failed for a document: `error` code, `kind` (transient / configuration / content), `attempt`, resulting `status` and `next_retry_at`, and an `action` saying what to do. The document is still indexed for search |
+| `extraction_backlog` | discovery | Documents per extraction state and error code; how many were due and re-queued (`retry_jobs`) |
+| `reprocess_processed` | worker | A retry job: documents re-extracted from the index, skipped (not due / content changed), failed |
+| `source_auth_retry` | worker | GitHub returned 401; cached token dropped and the secret re-read once (token rotation) |
 | `discovery_complete`, `repo_purged` | discovery | Jobs enqueued; documents of de-listed repositories removed |
 | `mcp_tool_call` | MCP (`aquifer.audit` logger) | Tool, principal, outcome (`allowed`/`denied`), result counts, latency |
 | `mcp_auth_failed` | MCP | Missing or invalid bearer token (client IP, path) |
@@ -34,6 +37,39 @@ fields @timestamp, event, repo, kind, indexed, skipped, failed, deleted
 | filter event in ["job_processed", "document_failed", "job_rate_limited"]
 | sort @timestamp desc
 ```
+
+### Extraction processing and retries
+
+Each document's extraction state is tracked separately from its content version:
+
+| `extraction_status` | Meaning |
+| --- | --- |
+| `ok` | Extraction succeeded (or only deterministic extraction applies) |
+| `retry_pending` | LLM extraction failed; `next_retry_at` says when it is retried (`extraction_attempts`, `extraction_error`) |
+| `failed` | Retry budget exhausted; not retried until the content changes |
+| `disabled` / `not_run` | LLM extraction is off / not applicable |
+
+A failure never fails the page or blocks search: the document is indexed with whatever
+deterministic metadata applies. Each discovery run (every `schedule_minutes`) finds documents
+whose retry is due and queues **reprocess** jobs; the worker rebuilds each document from the
+index (no GitHub call), reuses its embeddings when the text is unchanged, and re-runs
+extraction. Backoff doubles from `retry_base_s` (5 min) to `retry_max_s` (6 h). Throttling and
+configuration errors (model access, Marketplace subscription, credentials) get `max_attempts`
+(8 ≈ 1 day); errors caused by the document itself (rejected input, unparseable output) get
+`max_content_attempts` (3). Error codes:
+
+| `extraction_error` | Kind | Meaning / action |
+| --- | --- | --- |
+| `transient_error` | transient | Throttling, timeout or 5xx; retried |
+| `bedrock_marketplace_subscription_required` | configuration | Invoke the model once with a principal allowed `aws-marketplace:Subscribe` |
+| `bedrock_use_case_form_required` | configuration | Submit the Anthropic use case form in the Bedrock console |
+| `bedrock_model_not_available` / `bedrock_model_not_found` / `bedrock_invalid_model` | configuration | Choose a model available in the region (`extraction_model_id`) |
+| `bedrock_access_denied` | configuration | Enable model access / allow `bedrock:InvokeModel` for the model |
+| `aws_credentials_unavailable` | configuration | Credentials missing or expired |
+| `bedrock_rejected_input` | content | The model rejected this document's input |
+| `unparseable_model_output` | content | The model's output was not valid JSON for the schema |
+
+Job-level failures (a reprocess or fetch job that crashes) still go to the SQS DLQ.
 
 ### Redriving the DLQ
 
@@ -111,4 +147,6 @@ each document re-index the next time it is fetched; to force a full rebuild, dep
 | MCP client times out connecting | It is not on an allowed network: run it inside the VPC, or add its private CIDR via `mcp_allowed_cidrs` and route through VPN/peering |
 | MCP task keeps restarting with `refusing to start: No MCP auth tokens configured` | The auth secret is empty or not JSON — restore `{"default": "<token>"}` |
 | Search returns nothing for a repo | It is not in `repos`, ingestion has not run yet, or every job failed — check `list_sources` (`indexed_documents`) and the DLQ |
-| `extraction_status: failed` on documents | LLM output could not be parsed; retried automatically next time the document is fetched |
+| `extraction: {"retry_pending": n}` in `list_sources` | Extraction failed and is scheduled for automatic retry — see the `semantic_extraction_failed` `action` text |
+| `extraction_error: bedrock_*` | Bedrock setup — see [deployment.md](./deployment.md#bedrock-model-access) |
+| `extraction_status: failed` | Retry budget used up (or the model repeatedly rejected this document's input). Retried when its content changes. After fixing the cause, invoke discovery with `{"retry_failed": true}` (`aws lambda invoke --payload '{"retry_failed":true}' …`, or `./aquifer-test retry-failed`) to re-run them with a fresh budget |

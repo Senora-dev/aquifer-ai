@@ -19,7 +19,7 @@ agent> find_related("billing-api", direction="incoming")
 orders-service  depends_on  billing-api      explicit_reference   2 sources
   acme/platform  docker-compose.yml  L6   @a81b5c0   https://github.com/acme/platform/blob/a81b5c0…/docker-compose.yml#L6
   acme/platform  catalog-info.yaml   L10  @a81b5c0   …
-checkout-service depends_on billing-api      llm_extracted, grounded (text match)
+checkout-service depends_on billing-api      claimed by issue #12 (llm_extracted, quote verified)
   acme/payments  issue #12           L2   updated 2024-06-05
 ```
 
@@ -99,8 +99,10 @@ flowchart LR
    (Terraform, docker-compose, Backstage descriptors, ADRs) from a pinned commit of the default
    branch. Unchanged content is skipped by content hash.
 2. **Extract.** Deterministic parsers produce `explicit_reference` facts with exact lines. An
-   LLM on your Bedrock extracts relationships from prose; each is checked against the text and
-   marked `grounded` or not.
+   LLM on your Bedrock extracts relationships from prose with what the text does with them
+   (adds, removes, proposes, negates) and a verbatim quote that is checked against the source.
+   Each relationship gets a status: only configuration parsed at a revision is `current`; prose
+   yields `claimed`, `removed`, `proposed`, `not_merged` or `discussed`.
 3. **Index.** Chunks (exact source slices with line ranges) are embedded and written to
    OpenSearch Serverless. Updates write a new generation before removing the old one; deleted
    files, removed READMEs and de-listed repositories are removed from the index.
@@ -166,7 +168,8 @@ endpoints, the NLB and one small Fargate task add roughly $130/month. Bedrock is
   not report deletions); deleted files, removed READMEs and de-listed repositories are.
 - File provenance is the commit at which the file was read; issue/PR bodies have no revision
   (their `updated_at` is reported instead).
-- LLM-extracted relationships are only checked for a textual mention of the target, not verified.
+- LLM-extracted relationships are claims: Aquifer checks the cited quote and the source context
+  (merged / open / closed PR), but cannot verify that a claim is true.
 - The MCP listener is plain TCP inside the VPC unless you pass an ACM certificate
   (`-c mcp_certificate_arn=…`).
 - The benchmark corpus is small and synthetic; it verifies behavior, not real-world accuracy.
