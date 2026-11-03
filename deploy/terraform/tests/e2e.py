@@ -154,7 +154,8 @@ async def run(args: argparse.Namespace) -> None:
             if x["document_id"] not in docs:
                 docs.append(x["document_id"])
         adr = f"github:{payments}:file:docs/adr/0007-ledger-on-postgres.md"
-        check("search: the ADR ranks in the top 3", adr in docs[:3], docs[:3])
+        if not args.after_mutation:  # the update test deletes this ADR
+            check("search: the ADR ranks in the top 3", adr in docs[:3], docs[:3])
         if out:
             check("search results carry indexed_at and evidence",
                   all("indexed_at" in x and x["evidence"].get("repository") for x in out))
@@ -162,8 +163,9 @@ async def run(args: argparse.Namespace) -> None:
         # --- open the evidence ----------------------------------------------------------
         compose = f"github:{payments}:file:docker-compose.yml"
         doc = await call("get_document", document_id=compose, line_start=6, line_end=8)
+        expected_line = "- valkey" if args.after_mutation else "- redis"
         check("get_document excerpt shows the exact lines",
-              "- redis" in ((doc.get("excerpt") or {}).get("text") or ""), doc.get("excerpt"))
+              expected_line in ((doc.get("excerpt") or {}).get("text") or ""), doc.get("excerpt"))
         check("get_document has revision + indexed_at",
               bool(SHA_RE.match(doc.get("revision") or "")) and bool(doc.get("indexed_at")))
 
@@ -179,9 +181,20 @@ async def run(args: argparse.Namespace) -> None:
         if args.after_mutation:
             out = await call("find_related", entity="billing-api", direction="outgoing")
             es = edges(out)
-            check("update propagated: redis edge gone, valkey present",
-                  ("outgoing", "billing-api", "depends_on", "valkey") in es
-                  and ("outgoing", "billing-api", "depends_on", "redis") not in es, list(es))
+            valkey = es.get(("outgoing", "billing-api", "depends_on", "valkey"))
+            check("update propagated: valkey edge from docker-compose.yml",
+                  valkey is not None and any(ev.get("path") == "docker-compose.yml"
+                                             for ev in valkey["evidence"]), list(es))
+            # redis may still be stated elsewhere (e.g. a merged PR, via the LLM); what must be
+            # gone is the evidence from the edited file.
+            redis = es.get(("outgoing", "billing-api", "depends_on", "redis"))
+            stale = [ev for ev in (redis or {}).get("evidence", [])
+                     if ev.get("path") == "docker-compose.yml"]
+            check("update propagated: no redis evidence left from docker-compose.yml",
+                  not stale, stale)
+            if redis:
+                print(f"       note: redis still supported by {redis['support']} "
+                      f"({sorted({ev.get('document_id') for ev in redis['evidence']})})")
             gone = await call("get_document", document_id=adr)
             check("deletion propagated: ADR no longer found", gone == {"document_id": adr,
                                                                      "found": False}, gone)

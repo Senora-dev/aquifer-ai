@@ -404,13 +404,15 @@ cmd_test_updates() {
   git -C "$work/r" -c user.name=aquifer-test -c user.email=aquifer-test@users.noreply.github.com \
     commit -qam "test: change a dependency and delete an ADR"
   git -C "$work/r" push -q
-  cmd_ingest
-  cmd_test --after-mutation || { warn "update checks failed"; }
+  local rc=0
+  # Run the checks in a subshell so a failure (die/exit) still reaches the revert below.
+  ( cmd_ingest && cmd_test --after-mutation ) || rc=$?
   say "reverting the test commit"
-  git -C "$work/r" revert --no-edit HEAD >/dev/null
-  git -C "$work/r" push -q
-  cmd_ingest
+  git -C "$work/r" revert --no-edit HEAD >/dev/null && git -C "$work/r" push -q \
+    || warn "revert failed — revert the last commit in $payments manually"
+  cmd_ingest || rc=$?
   rm -rf "$work"
+  return $rc
 }
 
 # --- logs / down -------------------------------------------------------------------------------
