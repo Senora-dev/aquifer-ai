@@ -146,3 +146,12 @@ def log_event(logger: logging.Logger, event: str, *, level: int = logging.INFO, 
     """
     payload = {"event": event, **{k: v for k, v in fields.items() if v is not None}}
     logger.log(level, json.dumps(payload, default=str, sort_keys=True))
+
+
+def configure_lambda_logging(level: str) -> None:
+    """Make INFO-level operational events visible in Lambda.
+
+    The Lambda Python runtime installs its own handler but leaves the root logger at WARNING,
+    which would silently drop ``job_processed`` and the other INFO events.
+    """
+    logging.getLogger().setLevel(level.upper())

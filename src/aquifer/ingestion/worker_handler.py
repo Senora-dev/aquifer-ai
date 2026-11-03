@@ -24,7 +24,7 @@ import logging
 import time
 
 from aquifer.core.config import Settings, get_settings
-from aquifer.core.errors import RateLimitedError, log_event
+from aquifer.core.errors import RateLimitedError, configure_lambda_logging, log_event
 from aquifer.core.hooks import get_pipeline
 from aquifer.core.models import FetchJob, SourceType
 from aquifer.ingestion import aws
@@ -76,6 +76,7 @@ def _pipeline_for(source_type: SourceType, settings: Settings) -> IngestionPipel
 
 def handler(event, context=None) -> dict:  # noqa: ANN001 - Lambda signature
     settings = get_settings()
+    configure_lambda_logging(settings.log_level)
     processed = 0
     requeued = 0
     for record in event.get("Records", []):

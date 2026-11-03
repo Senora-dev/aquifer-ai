@@ -22,7 +22,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from aquifer.core.config import Settings, get_settings
-from aquifer.core.errors import log_event
+from aquifer.core.errors import configure_lambda_logging, log_event
 from aquifer.core.models import Source, SourceType
 from aquifer.ingestion import aws
 from aquifer.ingestion.factory import build_connector, build_vector_store
@@ -71,6 +71,7 @@ def purge_unlisted_repos(settings: Settings, vector_store=None) -> int:  # noqa:
 
 def handler(event=None, context=None) -> dict:  # noqa: ANN001 - Lambda signature
     settings = get_settings()
+    configure_lambda_logging(settings.log_level)
     ingestion = settings.ingestion
     run_started = datetime.now(UTC)
 
