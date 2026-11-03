@@ -99,8 +99,9 @@ async def run(args: argparse.Namespace) -> None:
                   (ev.get("url") or "").startswith(
                       f"https://github.com/{owner_platform}/blob/{ev.get('revision')}/"
                       "docker-compose.yml#L6"), ev.get("url"))
-            check("explicit origin, supported by 2 documents",
-                  e["origins"] == ["explicit_reference"] and e["support"]["explicit"] == 2,
+            # Both descriptors state it explicitly; an LLM may additionally find it in prose.
+            check("explicit origin, stated by both descriptors",
+                  "explicit_reference" in e["origins"] and e["support"]["explicit"] == 2,
                   e["support"])
 
         out = await call("find_related", entity="billing-api", direction="outgoing")

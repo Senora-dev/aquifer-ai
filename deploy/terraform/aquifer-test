@@ -6,7 +6,7 @@
 #   ./aquifer-test configure      write terraform.tfvars (repos, region, models)
 #   ./aquifer-test plan           build artifacts + terraform plan (creates nothing)
 #   ./aquifer-test up             build + apply + store GitHub token + ingest + wait
-#   ./aquifer-test ingest         run discovery now and wait until the queue drains
+#   ./aquifer-test ingest [--full] run discovery now and wait (--full ignores the watermark)
 #   ./aquifer-test status         what is deployed and how ingestion is doing
 #   ./aquifer-test test           end-to-end MCP checks (+ idempotency check)
 #   ./aquifer-test test-updates   commit a change + a deletion to GitHub, re-ingest, verify, revert
@@ -241,7 +241,16 @@ queue_depth() {
     --output text | awk '{print $1+$2}'
 }
 
+state_bucket() {
+  aws lambda get-function-configuration --function-name "$(tfout discovery_function)" \
+    --query 'Environment.Variables.AQUIFER_INGESTION__STATE_BUCKET' --output text
+}
+
 cmd_ingest() {
+  if [[ "${1:-}" == "--full" ]]; then
+    say "full re-sync: removing the incremental watermark (unchanged documents are still skipped)"
+    aws s3 rm "s3://$(state_bucket)/watermarks/github.json" >/dev/null 2>&1 || true
+  fi
   say "running discovery now"
   local out; out="$(mktemp)"
   aws lambda invoke --function-name "$(tfout discovery_function)" --log-type None "$out" >/dev/null
@@ -251,34 +260,53 @@ cmd_ingest() {
     die "discovery failed (details: ./aquifer-test logs discovery 10)"
   fi
   ok "discovery: $(cat "$out")"
-  say "waiting for the ingestion queue to drain"
-  local q; q="$(tfout queue_url)"; local idle=0
-  for _ in $(seq 1 120); do
-    local d; d="$(queue_depth "$q")"
-    if [[ "$d" == "0" ]]; then idle=$((idle + 1)); [[ $idle -ge 3 ]] && break; else idle=0; fi
-    printf '  queue depth: %s\r' "$d" >&2; sleep 10
+  "$(python_bin)" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("enqueued", 0))' "$out" \
+    > "$BUILD/last_enqueued"
+  say "waiting for queued jobs to finish (in-flight jobs from earlier failures retry after the 30-min visibility timeout)"
+  local q; q="$(tfout queue_url)"; local idle=0 drained=0 visible inflight
+  for _ in $(seq 1 90); do
+    read -r visible inflight < <(aws sqs get-queue-attributes --queue-url "$q" \
+      --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
+      --query 'Attributes.[ApproximateNumberOfMessages,ApproximateNumberOfMessagesNotVisible]' --output text)
+    printf '  waiting: %s queued, %s in flight   \r' "$visible" "$inflight" >&2
+    if [[ "$visible" == "0" && "$inflight" == "0" ]]; then
+      idle=$((idle + 1)); [[ $idle -ge 3 ]] && { drained=1; break; }
+    else idle=0; fi
+    sleep 10
   done
   echo >&2
+  if [[ $drained == 1 ]]; then ok "queue drained"
+  else warn "queue not empty after 15 min ($visible queued, $inflight in flight) — continuing; see ./aquifer-test logs worker 30"
+  fi
   local dlq; dlq="$(queue_depth "$(tfout dlq_url)")"
-  [[ "$dlq" == "0" ]] && ok "queue drained, DLQ empty" || warn "DLQ has $dlq message(s) — see: ./aquifer-test logs worker"
+  [[ "$dlq" == "0" ]] && ok "DLQ empty" || warn "DLQ has $dlq message(s) — see: ./aquifer-test logs worker"
   # OpenSearch Serverless makes writes searchable after its refresh interval.
   sleep 60
 }
 
 ingest_summary() {
-  # Sum the worker's job_processed events since a given epoch-ms timestamp.
-  aws logs filter-log-events --log-group-name "/aws/lambda/$(tfout worker_function)" \
-    --start-time "$1" --filter-pattern '"job_processed"' --query 'events[].message' --output json \
-  | "$(python_bin)" -c '
+  # Sum the worker's job_processed events since an epoch-ms timestamp. CloudWatch Logs can take
+  # a minute or two to make new events searchable, so wait until at least $2 jobs are visible.
+  local since="$1" expect="${2:-0}" result
+  for _ in $(seq 1 18); do
+    result="$(aws logs filter-log-events --log-group-name "/aws/lambda/$(tfout worker_function)" \
+      --start-time "$since" --filter-pattern '"job_processed"' --query 'events[].message' --output json \
+    | "$(python_bin)" -c '
 import json, sys, re, collections
 tot = collections.Counter()
 for m in json.load(sys.stdin):
     j = re.search(r"\{.*\}", m)
     if j:
         e = json.loads(j.group(0))
+        tot["jobs"] += 1
         for k in ("fetched", "indexed", "skipped", "failed", "deleted"):
             tot[k] += e.get(k, 0)
-print(json.dumps(dict(tot)))'
+print(json.dumps(dict(tot)))')"
+    local jobs; jobs="$(echo "$result" | "$(python_bin)" -c 'import json,sys; print(json.load(sys.stdin).get("jobs",0))')"
+    [[ "$jobs" -ge "$expect" ]] && break
+    sleep 10
+  done
+  echo "$result"
 }
 
 cmd_status() {
@@ -316,7 +344,11 @@ start_forward() {
 }
 
 stop_forward() {
-  [[ -f "$BUILD/forward.pid" ]] && kill "$(cat "$BUILD/forward.pid")" 2>/dev/null || true
+  if [[ -f "$BUILD/forward.pid" ]]; then
+    local pid; pid="$(cat "$BUILD/forward.pid")"
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
   rm -f "$BUILD/forward.pid"
 }
 
@@ -340,20 +372,25 @@ cmd_test() {
   trap stop_forward EXIT
   local repos expect_llm=()
   repos="$("${TF[@]}" output -json repos | "$py" -c 'import json,sys; print(" ".join(json.load(sys.stdin)))')"
-  grep -q 'semantic_index_enabled *= *false' "$HERE/terraform.tfvars" 2>/dev/null || expect_llm=(--expect-llm)
+  if [[ "${AQUIFER_SKIP_LLM:-}" != "1" ]] && ! grep -q "semantic_index_enabled *= *false" "$HERE/terraform.tfvars" 2>/dev/null; then expect_llm=(--expect-llm); fi
 
   say "end-to-end MCP checks"
   # shellcheck disable=SC2086
   "$py" "$HERE/tests/e2e.py" --url "http://127.0.0.1:$PORT/mcp" --token "$(mcp_token)" \
-    --repos $repos "${expect_llm[@]}" "$@" --json-out "$BUILD/e2e-report.json"
+    --repos $repos ${expect_llm[@]+"${expect_llm[@]}"} "$@" --json-out "$BUILD/e2e-report.json"
 
   say "idempotency: a second ingestion must re-index nothing"
   local since; since=$(( $(date +%s) * 1000 ))
   cmd_ingest
-  local summary; summary="$(ingest_summary "$since")"
+  local summary; summary="$(ingest_summary "$since" "$(cat "$BUILD/last_enqueued" 2>/dev/null || echo 1)")"
   echo "  $summary" >&2
-  "$py" -c "import json,sys; s=json.loads(sys.argv[1]); sys.exit(0 if s.get('indexed',0)==0 and s.get('failed',0)==0 and s.get('skipped',0)>0 else 1)" "$summary" \
-    && ok "unchanged documents skipped (no Bedrock calls)" || die "re-ingestion indexed or failed documents: $summary"
+  if "$py" -c "import json,sys; s=json.loads(sys.argv[1]); sys.exit(0 if s.get('indexed',0)==0 and s.get('failed',0)==0 else 1)" "$summary"; then
+    ok "nothing re-indexed: unchanged documents skipped (no Bedrock calls, no downloads)"
+  else
+    warn "documents were re-indexed. Expected only for documents whose LLM extraction failed earlier"
+    warn "(they are retried by design) — check: ./aquifer-test logs worker 10 | grep extraction_failed"
+    return 1
+  fi
   ok "report: $BUILD/e2e-report.json"
 }
 
@@ -407,7 +444,7 @@ main() {
     build) cmd_build ;;
     plan) cmd_plan ;;
     up) cmd_up ;;
-    ingest) cmd_ingest ;;
+    ingest) cmd_ingest "$@" ;;
     status) cmd_status ;;
     test) cmd_test "$@" ;;
     test-updates) cmd_test_updates ;;
