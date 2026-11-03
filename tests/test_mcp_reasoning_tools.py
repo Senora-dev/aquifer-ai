@@ -63,7 +63,8 @@ def lake():
         issue.id: SemanticMetadata(
             entities=[Entity(type="service", name="reports")],
             relationships=[Relationship(type="depends_on", source="reports",
-                                        target="billing-api")]),
+                                        target="billing-api", assertion="present",
+                                        quote="Reports service now depends on Billing-API")]),
         hallucinated.id: SemanticMetadata(
             relationships=[Relationship(type="depends_on", source="cache",
                                         target="billing-api")]),
@@ -107,19 +108,20 @@ def test_find_related_returns_directional_edges_with_evidence(lake):
     outgoing = edges[("outgoing", "billing-api", "depends_on", "payments-db")]
     assert outgoing["support"]["explicit"] == 1
 
-    # Case-insensitive match; LLM edge found in the text → grounded with a text_match line.
+    # Case-insensitive match; an LLM claim with a verified quote is "claimed", never "current".
     llm = edges[("incoming", "reports", "depends_on", "billing-api")]
-    assert llm["origins"] == ["llm_extracted"]
-    assert llm["support"] == {"documents": 1, "explicit": 0, "llm_grounded": 1,
-                              "llm_ungrounded": 0}
-    assert llm["evidence"][0]["locator"] == "text_match"
+    assert llm["origins"] == ["llm_extracted"] and llm["status"] == "claimed"
+    assert llm["support"]["claimed"] == 1 and llm["support"]["explicit"] == 0
+    assert llm["evidence"][0]["locator"] == "quote"
+    assert llm["evidence"][0]["quote_verified"] is True
     assert llm["evidence"][0]["line_start"] == 1
 
     # LLM edge whose target is not in the text is kept but clearly flagged.
     flagged = edges[("incoming", "cache", "depends_on", "billing-api")]
-    assert flagged["support"]["llm_ungrounded"] == 1
+    assert flagged["status"] == "claimed"
+    assert flagged["evidence"][0]["mention_found"] is False
     assert flagged["evidence"][0]["line_start"] is None
-    assert out["evidence_status"] == "explicit"
+    assert out["evidence_status"] == "current"
 
 
 def test_explicit_edges_rank_first(lake):

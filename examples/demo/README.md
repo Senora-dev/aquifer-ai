@@ -77,5 +77,5 @@ Delete `docs/adr/0007-ledger-on-postgres.md` and re-sync: it disappears from sea
 
 Local mode uses a lexical embedder and no LLM, so prose-only facts — e.g. issue #12's
 "checkout-service depends on billing-api" — are not extracted. A deployment (or
-`ingest --bedrock`) adds them, labelled `llm_extracted` with `grounded: true` and the line of the
+`ingest --bedrock`) adds them, labelled `llm_extracted` with `status: claimed`, a verified quote and the line of the
 mention.

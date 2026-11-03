@@ -53,7 +53,8 @@ mostly OpenSearch Serverless (1 OCU). After `down` the cost is zero.
 - every repository was ingested (`list_sources`)
 - `find_related` returns explicit relationships with the real file, line, commit SHA and
   line-anchored GitHub permalink, supported by both descriptors
-- LLM extraction from the real GitHub issue (`llm_extracted`, `grounded`, line of the mention)
+- LLM extraction from the real GitHub issue (`claimed`, verified quote on the right line); a merged
+  PR that moves off memcached yields `removed` and an open PR's idea yields `proposed` — never `current`
 - Terraform module references across both repositories; similar names not confused; unknown
   entities return `evidence_status: none`; repository filters isolate results
 - semantic search ranks the ADR first; `get_document` returns the exact lines; merged vs open PR

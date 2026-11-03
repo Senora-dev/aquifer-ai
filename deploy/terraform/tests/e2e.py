@@ -118,9 +118,23 @@ async def run(args: argparse.Namespace) -> None:
             check("LLM: checkout-service → billing-api extracted from the issue", bool(llm),
                   [(x["source"], x["type"], x["origins"]) for x in out["relationships"]])
             if llm:
-                ev = llm[0]["evidence"][0]
-                check("LLM edge is grounded with the line of the mention",
-                      llm[0]["support"]["llm_grounded"] >= 1 and ev.get("line_start") == 2, ev)
+                ev = next(e for e in llm[0]["evidence"] if e["origin"] == "llm_extracted")
+                check("LLM edge: claimed (not current), verified quote on line 2",
+                      llm[0]["status"] == "claimed" and ev.get("quote_verified") is True
+                      and ev.get("line_start") == 2, {k: ev.get(k) for k in (
+                          "status", "quote_verified", "line_start", "assertion")})
+
+            # A merged PR that *moved off* memcached must never make memcached current.
+            out = await call("find_related", entity="memcached")
+            mem = [x for x in out["relationships"] if x["source"] == "billing-api"]
+            check("removed dependency (merged PR) is 'removed', never current",
+                  bool(mem) and all(x["status"] == "removed" for x in mem),
+                  [(x["status"], x["support"]) for x in mem])
+            out = await call("find_related", entity="fraud-check")
+            prop = [x for x in out["relationships"] if x["source"] == "billing-api"]
+            check("open-PR proposal is 'proposed', never current",
+                  bool(prop) and all(x["status"] == "proposed" for x in prop),
+                  [(x["status"], x["support"]) for x in prop])
 
         # --- terraform module references ------------------------------------------------
         src = "git::https://github.com/acme/terraform-modules.git//sqs-queue?ref=v1.4.0"

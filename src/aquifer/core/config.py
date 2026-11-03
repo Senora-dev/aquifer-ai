@@ -146,6 +146,10 @@ class IngestionSettings(_Base):
     # Rate-limited jobs are re-enqueued with a delay at most this many times before failing
     # into the DLQ.
     max_rate_limit_requeues: int = 12
+    # Documents whose extraction is due for a retry are re-queued by each discovery run (at
+    # most this many per run, in jobs of retry_job_size).
+    retry_sweep_limit: int = 200
+    retry_job_size: int = 10
 
 
 class SemanticIndexSettings(_Base):
@@ -169,6 +173,15 @@ class SemanticIndexSettings(_Base):
     # Also run the LLM on files a deterministic parser handled. Off by default: the parser's
     # explicit references are more precise and the LLM call costs money.
     llm_for_structured_files: bool = False
+    # Retries of failed LLM extraction (independent of content changes). Delay doubles per
+    # attempt: retry_base_s, 2x, 4x ... capped at retry_max_s.
+    retry_base_s: int = 300
+    retry_max_s: int = 21_600
+    # Throttling / configuration failures are retried up to max_attempts; failures caused by
+    # this document's content (rejected input, unparseable output) up to max_content_attempts.
+    # After that the document is marked "failed" until its content changes.
+    max_attempts: int = 8
+    max_content_attempts: int = 3
 
 
 class McpSettings(_Base):

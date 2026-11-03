@@ -69,7 +69,7 @@
           }
         ],
         "exhaustive": true,
-        "evidence_status": "explicit"
+        "evidence_status": "current"
       }
     },
     {
@@ -1062,6 +1062,167 @@
             "service",
             "ledger-service"
           ]
+        ]
+      },
+      "requires": "llm"
+    },
+    {
+      "id": "status-replacement-removed",
+      "scenario": "relationship_status",
+      "tool": "find_related",
+      "args": {
+        "entity": "billing-api",
+        "direction": "outgoing"
+      },
+      "expect": {
+        "status": [
+          {
+            "direction": "outgoing",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "memcached",
+            "status": "removed"
+          }
+        ],
+        "not_current": [
+          {
+            "direction": "outgoing",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "memcached"
+          }
+        ]
+      },
+      "requires": "llm"
+    },
+    {
+      "id": "status-replacement-added",
+      "scenario": "relationship_status",
+      "tool": "find_related",
+      "args": {
+        "entity": "redis",
+        "direction": "incoming"
+      },
+      "expect": {
+        "status": [
+          {
+            "direction": "incoming",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "redis",
+            "status": "current"
+          }
+        ]
+      },
+      "requires": "llm"
+    },
+    {
+      "id": "status-proposal",
+      "scenario": "relationship_status",
+      "tool": "find_related",
+      "args": {
+        "entity": "fraud-check"
+      },
+      "expect": {
+        "status": [
+          {
+            "direction": "incoming",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "fraud-check",
+            "status": "proposed"
+          }
+        ],
+        "not_current": [
+          {
+            "direction": "incoming",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "fraud-check"
+          }
+        ]
+      },
+      "requires": "llm"
+    },
+    {
+      "id": "status-unmerged-pr",
+      "scenario": "relationship_status",
+      "tool": "find_related",
+      "args": {
+        "entity": "kafka"
+      },
+      "expect": {
+        "not_current": [
+          {
+            "direction": "incoming",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "kafka"
+          }
+        ],
+        "forbid_status": {
+          "target": "kafka",
+          "statuses": [
+            "current",
+            "claimed"
+          ]
+        }
+      },
+      "requires": "llm"
+    },
+    {
+      "id": "status-negation",
+      "scenario": "relationship_status",
+      "tool": "find_related",
+      "args": {
+        "entity": "ledger-db"
+      },
+      "expect": {
+        "forbid_status": {
+          "target": "ledger-db",
+          "source": "billing-api",
+          "statuses": [
+            "current",
+            "claimed"
+          ]
+        }
+      },
+      "requires": "llm"
+    },
+    {
+      "id": "status-discussion",
+      "scenario": "relationship_status",
+      "tool": "find_related",
+      "args": {
+        "entity": "dynamodb"
+      },
+      "expect": {
+        "forbid_status": {
+          "target": "dynamodb",
+          "statuses": [
+            "current",
+            "claimed"
+          ]
+        }
+      },
+      "requires": "llm"
+    },
+    {
+      "id": "status-conflict-stale-readme",
+      "scenario": "relationship_status",
+      "tool": "find_related",
+      "args": {
+        "entity": "memcached"
+      },
+      "expect": {
+        "status": [
+          {
+            "direction": "incoming",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "memcached",
+            "status": "removed"
+          }
         ]
       },
       "requires": "llm"

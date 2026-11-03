@@ -46,7 +46,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.out:
         args.out.write_text(json.dumps(report, indent=2, default=str))
 
-    summary = {k: report[k] for k in ("mode", "cases", "metrics", "latency_ms", "by_scenario")}
+    summary = {k: report[k] for k in ("mode", "valid", "extraction_states", "extraction_errors",
+                                      "cases", "metrics", "latency_ms", "by_scenario")}
     summary["extraction"] = {k: v for k, v in (report["extraction"] or {}).items()
                              if k != "per_file"}
     summary["cost"] = report["cost"]
@@ -55,7 +56,10 @@ def main(argv: list[str] | None = None) -> int:
         if r["status"] == "failed":
             bad = [c for c in r["checks"] if not c["ok"]]
             print(f"FAILED {r['id']}: {bad}", file=sys.stderr)
-    return 1 if report["cases"]["failed"] else 0
+    if not report["valid"]:
+        print(f"INVALID RUN: LLM extraction failed: {report['extraction_errors']}",
+              file=sys.stderr)
+    return 1 if report["cases"]["failed"] or not report["valid"] else 0
 
 
 if __name__ == "__main__":

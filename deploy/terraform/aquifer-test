@@ -7,6 +7,7 @@
 #   ./aquifer-test plan           build artifacts + terraform plan (creates nothing)
 #   ./aquifer-test up             build + apply + store GitHub token + ingest + wait
 #   ./aquifer-test ingest [--full] run discovery now and wait (--full ignores the watermark)
+#   ./aquifer-test retry-failed   re-run extraction for documents marked failed
 #   ./aquifer-test status         what is deployed and how ingestion is doing
 #   ./aquifer-test test           end-to-end MCP checks (+ idempotency check)
 #   ./aquifer-test test-updates   commit a change + a deletion to GitHub, re-ingest, verify, revert
@@ -81,20 +82,25 @@ cmd_check() {
   [[ -n "$extract" ]] || die "no Anthropic Claude model or inference profile found in $REGION"
   "$(python_bin)" - "$embed" "$extract" <<'PY'
 import json, sys, boto3
+from aquifer.semantic.failures import classify_extraction_error
 embed, extract = sys.argv[1:3]
 rt = boto3.client("bedrock-runtime")
+
+def explain(label, model, exc):
+    f = classify_extraction_error(exc)
+    sys.exit(f"  \033[31m✗ {label} {model}: {f.code}\n    {f.message}\033[0m")
+
 try:
     rt.invoke_model(modelId=embed, body=json.dumps({"inputText": "aquifer check", "dimensions": 256}))
     print(f"  \033[32m✓\033[0m embedding model {embed} invocable", file=sys.stderr)
 except Exception as e:
-    sys.exit(f"  \033[31m✗ embedding model {embed}: {type(e).__name__}: {e}\033[0m")
+    explain("embedding model", embed, e)
 try:
     rt.converse(modelId=extract, messages=[{"role": "user", "content": [{"text": "Reply OK"}]}],
                 inferenceConfig={"maxTokens": 5})
     print(f"  \033[32m✓\033[0m extraction model {extract} invocable", file=sys.stderr)
 except Exception as e:
-    sys.exit(f"  \033[31m✗ extraction model {extract}: {type(e).__name__}: {e}\n"
-             "    (enable model access in the Bedrock console, or set AQUIFER_EXTRACTION_MODEL)\033[0m")
+    explain("extraction model", extract, e)
 PY
   echo "EXTRACTION_MODEL=$extract"
 }
@@ -309,6 +315,14 @@ print(json.dumps(dict(tot)))')"
   echo "$result"
 }
 
+cmd_retry_failed() {
+  say "re-running extraction for documents marked failed (fresh retry budget)"
+  local out; out="$(mktemp)"
+  aws lambda invoke --function-name "$(tfout discovery_function)" --cli-binary-format raw-in-base64-out \
+    --payload '{"retry_failed": true}' "$out" >/dev/null
+  ok "$(cat "$out")"
+}
+
 cmd_status() {
   say "deployment ($REGION)"
   "${TF[@]}" output 2>/dev/null | grep -v -i token || die "nothing deployed"
@@ -447,6 +461,7 @@ main() {
     plan) cmd_plan ;;
     up) cmd_up ;;
     ingest) cmd_ingest "$@" ;;
+    retry-failed) cmd_retry_failed ;;
     status) cmd_status ;;
     test) cmd_test "$@" ;;
     test-updates) cmd_test_updates ;;

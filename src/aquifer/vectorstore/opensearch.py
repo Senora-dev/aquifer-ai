@@ -33,7 +33,10 @@ from aquifer.vectorstore.schema import (
     FILTERABLE_FIELDS,
     INTEGER_FIELDS,
     KEYWORD_FIELDS,
+    RETRYABLE_STATUSES,
+    chunk_rank,
     chunk_to_source,
+    generation_rank,
     source_to_result,
     validate_filters,
 )
@@ -121,6 +124,7 @@ class AossVectorStore(VectorStore):
             "summary": {"type": "text"},
             "entities": {"type": "object", "enabled": False},
             "relationships": {"type": "object", "enabled": False},
+            "source_metadata": {"type": "object", "enabled": False},
         }
         props.update({f: {"type": "keyword"} for f in KEYWORD_FIELDS})
         props.update({f: {"type": "date"} for f in DATE_FIELDS})
@@ -254,21 +258,16 @@ class AossVectorStore(VectorStore):
             self.delete_by_document(document_id)
             return
         self.upsert(chunks)
-        generation = chunks[0].generation
-        updated_at = chunks[0].updated_at
+        ours = chunk_rank(chunks[0])
         existing = self._scan(
-            {"term": {"document_id": document_id}}, ["generation", "updated_at"]
+            {"term": {"document_id": document_id}},
+            ["generation", "updated_at", "revision_committed_at", "indexed_at"],
         )
-        stale = []
-        for hit in existing:
-            if generation is not None and hit.get("generation") == generation:
-                continue
-            # Never delete a generation of a *newer* upstream version written concurrently.
-            their = hit.get("updated_at")
-            if updated_at is not None and their and their > updated_at.isoformat():
-                continue
-            stale.append(hit["_id"])
-        self._delete_ids(stale)
+        # Only lower-ranked generations: never a newer version written concurrently, and two
+        # writers of the same version converge on one survivor.
+        own = chunks[0].generation
+        self._delete_ids([h["_id"] for h in existing
+                          if h.get("generation") != own and generation_rank(h) < ours])
 
     def delete_by_document(self, document_id: str) -> None:
         self.delete_by_filter({"document_id": document_id})
@@ -340,7 +339,8 @@ class AossVectorStore(VectorStore):
             return {}
         hits = self._scan(
             {"terms": {"document_id": list(document_ids)}},
-            ["document_id", "content_hash", "updated_at", "extraction_status", "indexed_at"],
+            ["document_id", "content_hash", "updated_at", "extraction_status", "indexed_at",
+             "extraction_attempts", "extraction_error", "next_retry_at"],
         )
         newest: dict[str, dict] = {}
         for hit in hits:
@@ -356,9 +356,44 @@ class AossVectorStore(VectorStore):
                 content_hash=h.get("content_hash"),
                 updated_at=h.get("updated_at"),
                 extraction_status=h.get("extraction_status"),
+                extraction_attempts=h.get("extraction_attempts") or 0,
+                extraction_error=h.get("extraction_error"),
+                next_retry_at=h.get("next_retry_at"),
             )
             for doc_id, h in newest.items()
         }
+
+    def get_document_vectors(self, document_id: str) -> dict[str, list[float]]:
+        body = {
+            "size": 1000,
+            "query": {"term": {"document_id": document_id}},
+            "_source": {"includes": ["text", "vector"]},
+        }
+        hits = self._search(body).get("hits", {}).get("hits", [])
+        return {h["_source"]["text"]: h["_source"]["vector"] for h in hits
+                if (h.get("_source") or {}).get("vector")}
+
+    def documents_due_for_retry(self, now, limit: int = 200) -> list[str] | None:  # noqa: ANN001
+        """Documents in retry_pending (or legacy partial) whose next_retry_at has passed, plus
+        legacy "failed" documents without an error code (indexed before retry tracking)."""
+        now_iso = now.isoformat()
+        query = {"bool": {"should": [
+            {"bool": {"filter": [
+                {"terms": {"extraction_status": list(RETRYABLE_STATUSES)}},
+                {"bool": {"should": [
+                    {"range": {"next_retry_at": {"lte": now_iso}}},
+                    {"bool": {"must_not": [{"exists": {"field": "next_retry_at"}}]}},
+                ], "minimum_should_match": 1}},
+            ]}},
+            {"bool": {
+                "filter": [{"term": {"extraction_status": "failed"}}],
+                "must_not": [{"exists": {"field": "extraction_error"}}],
+            }},
+        ], "minimum_should_match": 1}}
+        body = {"size": 0, "query": query,
+                "aggs": {"ids": {"terms": {"field": "document_id", "size": limit}}}}
+        aggs = self._search(body).get("aggregations", {})
+        return [b["key"] for b in aggs.get("ids", {}).get("buckets", [])]
 
     def _aggregate(self, filters: dict | None, aggs: dict) -> dict:
         query = self._build_filter(filters) or {"match_all": {}}

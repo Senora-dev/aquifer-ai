@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from aquifer.core.config import GitHubSettings, McpSettings, SemanticIndexSettings, Settings
+from aquifer.core.config import GitHubSettings, McpSettings, Settings
 from aquifer.core.entities import normalize_name
 from aquifer.core.hooks import InterceptorPipeline
 from aquifer.core.interfaces import Embedder
@@ -86,11 +86,15 @@ def build_lake(corpus: Path, *, mode: str = "offline", workdir: Path | None = No
     shutil.copytree(corpus, root, dirs_exist_ok=True)
     connector = LocalRepoConnector.from_root(root)
     use_llm = mode == "bedrock"
-    settings = Settings(
-        github=GitHubSettings(repo_allowlist=connector.repos),
-        mcp=McpSettings(default_k=10, max_k=50),
-        semantic_index=SemanticIndexSettings(enabled=use_llm),
-    )
+    # Start from the environment (AQUIFER_SEMANTIC_INDEX__MODEL_ID, AQUIFER_EMBEDDING__REGION,
+    # ...) and override only what the benchmark controls. Constructing a section on its own
+    # (e.g. SemanticIndexSettings()) would ignore the nested environment variables.
+    base = Settings()
+    settings = base.model_copy(update={
+        "github": GitHubSettings(repo_allowlist=connector.repos),
+        "mcp": McpSettings(default_k=10, max_k=50),
+        "semantic_index": base.semantic_index.model_copy(update={"enabled": use_llm}),
+    })
     if use_llm:
         from aquifer.embedding.bedrock import BedrockEmbedder
         from aquifer.ingestion.factory import build_semantic_indexer
@@ -261,10 +265,29 @@ def run_case(lake: Lake, case: dict) -> CaseResult:
             check("only allowed repos", {r["repo"] for r in out["related"]}
                   <= set(exp["only_repos"]))
         res.metrics["edges_returned"] = len(returned)
+        # Unsupported: neither parsed from configuration nor backed by a verified quote.
         res.metrics["edges_unsupported"] = sum(
             1 for e in out["relationships"]
-            if e["support"]["explicit"] == 0 and e["support"]["llm_grounded"] == 0
+            if e["support"]["explicit"] == 0
+            and not any(ev.get("quote_verified") for ev in e["evidence"])
         )
+        if "status" in exp:
+            got = {_edge_key(e): e["status"] for e in out["relationships"]}
+            for e in exp["status"]:
+                key = _edge_key(e)
+                check(f"status {key} == {e['status']}", got.get(key) == e["status"], got.get(key))
+        if "forbid_status" in exp:
+            rule = exp["forbid_status"]
+            bad = [(x["source"], x["status"]) for x in out["relationships"]
+                   if normalize_name(x["target"]) == normalize_name(rule["target"])
+                   and (not rule.get("source")
+                        or normalize_name(x["source"] or "") == normalize_name(rule["source"]))
+                   and x["status"] in rule["statuses"]]
+            check(f"{rule['target']} never {rule['statuses']}", not bad, bad)
+        for e in exp.get("not_current", []):
+            key = _edge_key(e)
+            st = {_edge_key(x): x["status"] for x in out["relationships"]}.get(key)
+            check(f"not presented as current {key}", st != "current", st)
         res.metrics["provenance"] = [
             any(_has_provenance(ev, bool(ev.get("path"))) and ev.get("line_start") is not None
                 for ev in e["evidence"])
@@ -382,6 +405,8 @@ def run_benchmark(corpus: Path, cases_path: Path, *, mode: str = "offline",
     cases = load_cases(cases_path)
     base = build_lake(corpus, mode=mode)
     ingest_stats = dict(base.stats)
+    extraction_states = dict(base.tools.vector_store.facet("extraction_status", None) or [])
+    extraction_errors = dict(base.tools.vector_store.facet("extraction_error", None) or [])
     ingest_chars = base.embedder.document_chars
     llm_calls = base.indexer.calls if base.indexer else 0
     llm_chars = base.indexer.input_chars if base.indexer else 0
@@ -445,6 +470,11 @@ def run_benchmark(corpus: Path, cases_path: Path, *, mode: str = "offline",
         "embedder": "bedrock" if mode == "bedrock" else "hashing (lexical, offline)",
         "extraction_mode": "deterministic + LLM" if mode == "bedrock" else "deterministic only",
         "corpus": {"documents_indexed": ingest_stats.get("indexed"), **ingest_stats},
+        # In --bedrock mode every document needing the LLM must have extraction "ok";
+        # otherwise LLM-dependent results are not meaningful.
+        "extraction_states": extraction_states,
+        "extraction_errors": extraction_errors,
+        "valid": not (mode == "bedrock" and extraction_errors),
         "cases": {"total": len(results), "passed": passed, "failed": failed,
                   "skipped": skipped},
         "metrics": {
