@@ -86,7 +86,7 @@ class GitHubConnector(Connector):
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._settings = settings or get_settings().github
-        self._token = token
+        self._token = _clean_token(token)
         self._http = http_client
         self._index_lookup = index_lookup
         self._sleep = sleep
@@ -160,9 +160,11 @@ class GitHubConnector(Connector):
         try:
             response = self.http.get(path, params=params)
         except Exception as exc:
+            # ``from None``: HTTP-layer exception messages can include request headers (and so
+            # the token); never chain them into logs or Lambda error responses.
             if is_transient(exc):
-                raise TransientError(f"GitHub request failed: {type(exc).__name__}") from exc
-            raise
+                raise TransientError(f"GitHub request failed: {type(exc).__name__}") from None
+            raise SourceRequestError(f"GitHub request failed: {type(exc).__name__}") from None
         status = getattr(response, "status_code", 200)
         headers = getattr(response, "headers", {}) or {}
         if status == 401:
@@ -482,6 +484,28 @@ class GitHubConnector(Connector):
             state=state,
             fetched_at=datetime.now(UTC),
         )
+
+
+class SourceRequestError(Exception):
+    """A non-retryable failure sending a request to GitHub (details withheld: may hold secrets)."""
+
+
+def _clean_token(token: str | None) -> str | None:
+    """Strip whitespace and reject tokens that cannot be sent in an HTTP header.
+
+    The error message never includes the token value.
+    """
+    if token is None:
+        return None
+    token = token.strip()
+    if not token:
+        return None
+    if any(ord(c) < 0x21 or ord(c) > 0x7E for c in token):
+        raise SourceAuthError(
+            "The GitHub token contains characters that are not allowed in an HTTP header "
+            "(e.g. spaces or line breaks inside it). Store the bare token in the secret."
+        )
+    return token
 
 
 def _file_doc_id(repo: str, path: str) -> str:

@@ -219,8 +219,12 @@ cmd_up() {
   rm -f "$BUILD/plan.tfplan"
 
   say "storing the GitHub token (from gh) in Secrets Manager — never in Terraform state"
-  gh auth token | aws secretsmanager put-secret-value --secret-id "$(tfout github_token_secret_arn)" \
-    --secret-string file:///dev/stdin >/dev/null
+  # printf (not a pipe from gh) so no trailing newline is stored; the value never hits argv.
+  local tokfile; tokfile="$(mktemp)"; chmod 600 "$tokfile"
+  printf '%s' "$(gh auth token)" > "$tokfile"
+  aws secretsmanager put-secret-value --secret-id "$(tfout github_token_secret_arn)" \
+    --secret-string "file://$tokfile" >/dev/null
+  rm -f "$tokfile"
   ok "github token stored"
 
   say "waiting for the MCP service to become stable"
@@ -241,7 +245,11 @@ cmd_ingest() {
   say "running discovery now"
   local out; out="$(mktemp)"
   aws lambda invoke --function-name "$(tfout discovery_function)" --log-type None "$out" >/dev/null
-  if grep -q errorMessage "$out"; then cat "$out" >&2; die "discovery failed"; fi
+  if grep -q errorMessage "$out"; then
+    sed -E 's/gh[opusr]_[A-Za-z0-9]{20,}/<redacted>/g' "$out" | "$(python_bin)" -c \
+      'import json,sys; e=json.load(sys.stdin); print("  " + e.get("errorType","") + ": " + e.get("errorMessage","")[:300], file=sys.stderr)'
+    die "discovery failed (details: ./aquifer-test logs discovery 10)"
+  fi
   ok "discovery: $(cat "$out")"
   say "waiting for the ingestion queue to drain"
   local q; q="$(tfout queue_url)"; local idle=0

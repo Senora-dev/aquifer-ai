@@ -306,3 +306,30 @@ def test_validate_access_surfaces_bad_token():
     conn = _connector({"/rate_limit": FakeResponse({}, status_code=401)})
     with pytest.raises(SourceAuthError, match="401"):
         conn.validate_access()
+
+
+def test_token_whitespace_is_stripped():
+    conn = GitHubConnector(settings=GitHubSettings(), token="  abc123\n")
+    assert conn._token == "abc123"
+
+
+def test_invalid_token_is_rejected_without_echoing_it():
+    secret = "ghp_" + "x" * 20 + " leaked"
+    with pytest.raises(SourceAuthError) as info:
+        GitHubConnector(settings=GitHubSettings(), token=secret)
+    assert secret not in str(info.value) and "xxxx" not in str(info.value)
+
+
+def test_http_layer_errors_never_carry_header_values():
+    from aquifer.connectors.github import SourceRequestError
+
+    class LeakyHttp:
+        def get(self, path, params=None):
+            raise ValueError("Illegal header value b'Bearer ghp_SECRETSECRET'")
+
+    conn = GitHubConnector(settings=GitHubSettings(request_retries=0), token="t",
+                           http_client=LeakyHttp())
+    with pytest.raises(SourceRequestError) as info:
+        conn.fetch(_job(DocumentKind.ISSUE))
+    assert "SECRET" not in str(info.value)
+    assert info.value.__cause__ is None and info.value.__suppress_context__

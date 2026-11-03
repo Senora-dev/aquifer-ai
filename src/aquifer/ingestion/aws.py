@@ -24,7 +24,9 @@ def get_secret(secret_id: str, *, region: str | None = None, client: Any | None 
     """Fetch a plaintext secret string (e.g. the GitHub token) from Secrets Manager."""
     client = client or _client("secretsmanager", region)
     response = client.get_secret_value(SecretId=secret_id)
-    return response["SecretString"]
+    # Secrets are often written with a trailing newline (``echo``, shell pipes); a newline in a
+    # token makes HTTP headers invalid, so surrounding whitespace is never part of the value.
+    return response["SecretString"].strip()
 
 
 def enqueue_job(

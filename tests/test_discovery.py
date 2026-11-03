@@ -118,3 +118,11 @@ def test_enqueue_delay_is_capped_at_sqs_maximum():
                    kind=DocumentKind.ISSUE)
     aws.enqueue_job("q", job, delay_seconds=5000, client=Sqs())
     assert sent["DelaySeconds"] == 900
+
+
+def test_get_secret_strips_trailing_newline():
+    class Sm:
+        def get_secret_value(self, SecretId):
+            return {"SecretString": "token-value\n"}
+
+    assert aws.get_secret("arn", client=Sm()) == "token-value"
