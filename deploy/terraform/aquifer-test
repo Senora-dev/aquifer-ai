@@ -101,12 +101,31 @@ PY
 
 detect_extraction_model() {
   if [[ -n "${AQUIFER_EXTRACTION_MODEL:-}" ]]; then echo "$AQUIFER_EXTRACTION_MODEL"; return; fi
-  # Prefer an active cross-region Claude Sonnet profile, then Haiku.
-  aws bedrock list-inference-profiles --type-equals SYSTEM_DEFINED \
-    --query "inferenceProfileSummaries[?status=='ACTIVE'].inferenceProfileId" --output text 2>/dev/null \
-    | tr '\t' '\n' | grep 'anthropic.claude' \
-    | awk '/sonnet/{print "1 " $0; next} /haiku/{print "2 " $0; next} {print "3 " $0}' \
-    | sort -k1,1n -k2,2r | head -1 | cut -d' ' -f2
+  # Try active Claude inference profiles — regional (eu./us./...) before global., Sonnet before
+  # Haiku, newest first — and return the first one this account can actually invoke.
+  "$(python_bin)" - <<'PY'
+import re, sys, boto3
+br, rt = boto3.client("bedrock"), boto3.client("bedrock-runtime")
+ids = [p["inferenceProfileId"] for p in br.list_inference_profiles(typeEquals="SYSTEM_DEFINED")
+       ["inferenceProfileSummaries"] if p["status"] == "ACTIVE" and "anthropic.claude" in p["inferenceProfileId"]]
+def version(i):
+    # "claude-sonnet-4-5-20250929-v1:0" -> [4, 5]; old "claude-3-sonnet-..." -> [3]
+    name = re.sub(r"-\d{8}.*$|-v\d+(:\d+)?$", "", i.split("anthropic.", 1)[1])
+    return [int(x) for x in re.findall(r"\d+", name)]
+def rank(i):
+    family = 0 if "sonnet" in i else 1 if "haiku" in i else 2
+    v = version(i)
+    return (i.startswith("global."), family, not v, [-x for x in (v + [0, 0, 0])[:3]])
+for model in sorted(ids, key=rank):
+    try:
+        rt.converse(modelId=model, messages=[{"role": "user", "content": [{"text": "Reply OK"}]}],
+                    inferenceConfig={"maxTokens": 5})
+    except Exception as e:
+        print(f"  skip {model}: {type(e).__name__}", file=sys.stderr)
+        continue
+    print(model)
+    break
+PY
 }
 
 # --- seed / configure --------------------------------------------------------------------------
