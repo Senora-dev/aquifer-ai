@@ -315,3 +315,67 @@ def test_list_document_ids_uses_aggregation():
     aggs = {"ids": {"buckets": [{"key": "a"}, {"key": "b"}]}}
     out = _store(FakeOpenSearch(aggregations=aggs)).list_document_ids({"repo": "o/r"})
     assert out == {"a", "b"}
+
+
+class _IndexMissing(Exception):
+    status_code = 404
+    error = "index_not_found_exception"
+
+
+class MissingIndexClient(FakeOpenSearch):
+    def search(self, *, index, body):
+        raise _IndexMissing("no such index [ctx]")
+
+
+def test_reads_before_the_index_exists_are_empty():
+    store = _store(MissingIndexClient())
+    assert store.facet("repo") == []
+    assert store.query([0.0] * 4, k=3) == []
+    assert store.get_by_document("d") == []
+    assert store.list_document_ids({"repo": "o/r"}) == set()
+    assert store.max_value("indexed_at") is None
+
+
+def test_other_search_errors_still_raise():
+    class Boom(FakeOpenSearch):
+        def search(self, *, index, body):
+            raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        _store(Boom()).query([0.0] * 4, k=3)
+
+
+def test_concurrent_index_creation_race_is_tolerated_and_waits_for_visibility():
+    class Exists(Exception):
+        error = "resource_already_exists_exception"
+
+    class RacingIndices(FakeIndices):
+        def __init__(self):
+            super().__init__(existing=False)
+            self.exists_calls = 0
+
+        def exists(self, *, index):
+            self.exists_calls += 1
+            return self.exists_calls >= 4  # not visible for the first few checks
+
+        def create(self, *, index, body):
+            raise Exists("index [ctx/abc] already exists")
+
+    client = FakeOpenSearch()
+    client.indices = RacingIndices()
+    sleeps = []
+    store = AossVectorStore(settings=VectorStoreSettings(endpoint="x", index="ctx"),
+                            dimensions=4, client=client, sleep=sleeps.append)
+    store.ensure_index()
+    assert client.indices.exists_calls == 4 and len(sleeps) == 2
+
+
+def test_index_creation_other_errors_raise():
+    class Bad(FakeIndices):
+        def create(self, *, index, body):
+            raise RuntimeError("mapper_parsing_exception")
+
+    client = FakeOpenSearch()
+    client.indices = Bad(existing=False)
+    with pytest.raises(RuntimeError):
+        _store(client).ensure_index()

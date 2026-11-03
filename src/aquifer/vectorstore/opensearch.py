@@ -20,7 +20,8 @@ The boto3/opensearch-py clients are created lazily and can be injected for testi
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from aquifer.core.config import VectorStoreSettings, get_settings
@@ -47,14 +48,22 @@ _MAX_SCAN = 10_000  # from+size ceiling for a plain search
 _SOURCE_EXCLUDES = {"excludes": ["vector"]}
 
 
+def _is_index_not_found(exc: BaseException) -> bool:
+    return getattr(exc, "status_code", None) == 404 and "index_not_found" in str(
+        getattr(exc, "error", "") or exc
+    )
+
+
 class AossVectorStore(VectorStore):
     def __init__(
         self,
         settings: VectorStoreSettings | None = None,
         dimensions: int | None = None,
         client: Any | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._settings = settings or get_settings().vector_store
+        self._sleep = sleep
         if dimensions is None:
             dimensions = get_settings().embedding.dimensions
         self._dimensions = dimensions
@@ -127,7 +136,14 @@ class AossVectorStore(VectorStore):
     def ensure_index(self) -> None:
         """Create the index, or add any fields introduced since it was created (idempotent)."""
         if not self.client.indices.exists(index=self._index):
-            self.client.indices.create(index=self._index, body=self._index_body())
+            try:
+                self.client.indices.create(index=self._index, body=self._index_body())
+                log_event(logger, "index_created", index=self._index)
+            except Exception as exc:
+                # Concurrent cold starts race to create it; losing that race is fine.
+                if "resource_already_exists" not in str(getattr(exc, "error", "") or exc):
+                    raise
+            self._wait_until_visible()
             return
         # Adding new fields to an existing mapping is allowed; changing existing ones is not, so
         # only the non-vector fields are sent and a conflict is logged rather than fatal.
@@ -148,6 +164,18 @@ class AossVectorStore(VectorStore):
                 index=self._index,
                 error=type(exc).__name__,
             )
+
+    def _wait_until_visible(self, timeout_s: float = 90.0) -> None:
+        """A new AOSS index can answer ``index_not_found`` for a short while after creation.
+
+        Writing during that window could auto-create an index with a dynamic mapping (no vector
+        field), so wait until it is visible before returning.
+        """
+        deadline = time.monotonic() + timeout_s
+        while not self.client.indices.exists(index=self._index):
+            if time.monotonic() > deadline:
+                raise TransientError(f"index {self._index} not visible after {timeout_s}s")
+            self._sleep(2.0)
 
     # --- writes ----------------------------------------------------------
 
@@ -186,7 +214,14 @@ class AossVectorStore(VectorStore):
         self._bulk(actions, "index")
 
     def _search(self, body: dict) -> dict:
-        return self.client.search(index=self._index, body=body)
+        try:
+            return self.client.search(index=self._index, body=body)
+        except Exception as exc:
+            # Before the first worker run the index does not exist yet; for every reader
+            # (discovery's purge, the MCP tools) that simply means "nothing indexed".
+            if _is_index_not_found(exc):
+                return {"hits": {"hits": []}, "aggregations": {}}
+            raise
 
     def _scan(self, query: dict, fields: list[str]) -> list[dict]:
         """Return ``{"_id", **fields}`` for every hit of ``query`` (up to 10k)."""
