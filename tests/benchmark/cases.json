@@ -1,0 +1,1070 @@
+{
+  "description": "Aquifer retrieval benchmark over the synthetic repositories in examples/demo/repos. All organizations, revisions and URLs are fictional.",
+  "cases": [
+    {
+      "id": "dep-billing-outgoing",
+      "scenario": "explicit_dependencies",
+      "tool": "find_related",
+      "args": {
+        "entity": "billing-api",
+        "direction": "outgoing"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "outgoing",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "payments-db",
+            "evidence": {
+              "repository": "acme/payments",
+              "path": "docker-compose.yml",
+              "line_start": 7
+            }
+          },
+          {
+            "direction": "outgoing",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "payments-db",
+            "evidence": {
+              "repository": "acme/payments",
+              "path": "catalog-info.yaml",
+              "line_start": 11
+            }
+          },
+          {
+            "direction": "outgoing",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "redis",
+            "evidence": {
+              "repository": "acme/payments",
+              "path": "docker-compose.yml",
+              "line_start": 8
+            }
+          },
+          {
+            "direction": "outgoing",
+            "source": "billing-api",
+            "type": "consumes_api",
+            "target": "fx-rates-api",
+            "evidence": {
+              "repository": "acme/payments",
+              "path": "catalog-info.yaml",
+              "line_start": 13
+            }
+          },
+          {
+            "direction": "outgoing",
+            "source": "billing-api",
+            "type": "owned_by",
+            "target": "team-payments"
+          },
+          {
+            "direction": "outgoing",
+            "source": "billing-api",
+            "type": "part_of",
+            "target": "payments"
+          }
+        ],
+        "exhaustive": true,
+        "evidence_status": "explicit"
+      }
+    },
+    {
+      "id": "dep-orders-outgoing",
+      "scenario": "explicit_dependencies",
+      "tool": "find_related",
+      "args": {
+        "entity": "orders-service",
+        "direction": "outgoing"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "outgoing",
+            "source": "orders-service",
+            "type": "depends_on",
+            "target": "orders-db",
+            "evidence": {
+              "repository": "acme/platform",
+              "path": "docker-compose.yml",
+              "line_start": 5
+            }
+          },
+          {
+            "direction": "outgoing",
+            "source": "orders-service",
+            "type": "depends_on",
+            "target": "billing-api",
+            "evidence": {
+              "repository": "acme/platform",
+              "path": "catalog-info.yaml",
+              "line_start": 10
+            }
+          },
+          {
+            "direction": "outgoing",
+            "source": "orders-service",
+            "type": "owned_by",
+            "target": "team-orders"
+          },
+          {
+            "direction": "outgoing",
+            "source": "orders-service",
+            "type": "part_of",
+            "target": "commerce"
+          }
+        ],
+        "exhaustive": true
+      }
+    },
+    {
+      "id": "dep-ledger-provides",
+      "scenario": "explicit_dependencies",
+      "tool": "find_related",
+      "args": {
+        "entity": "ledger-service",
+        "relationship_types": [
+          "provides_api"
+        ]
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "outgoing",
+            "source": "ledger-service",
+            "type": "provides_api",
+            "target": "ledger-api",
+            "evidence": {
+              "repository": "acme/payments",
+              "path": "catalog-info.yaml",
+              "line_start": 26
+            }
+          }
+        ],
+        "exhaustive": true
+      }
+    },
+    {
+      "id": "dep-search-billing-db",
+      "scenario": "explicit_dependencies",
+      "tool": "search_context",
+      "args": {
+        "query": "billing-api depends_on payments-db",
+        "k": 10
+      },
+      "expect": {
+        "relevant": [
+          "github:acme/payments:file:docker-compose.yml",
+          "github:acme/payments:file:catalog-info.yaml"
+        ],
+        "relevant_in_top": 5
+      }
+    },
+    {
+      "id": "dep-who-depends-on-billing",
+      "scenario": "explicit_dependencies",
+      "tool": "find_related",
+      "args": {
+        "entity": "billing-api",
+        "direction": "incoming"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "incoming",
+            "source": "orders-service",
+            "type": "depends_on",
+            "target": "billing-api",
+            "evidence": {
+              "repository": "acme/platform",
+              "path": "docker-compose.yml",
+              "line_start": 6
+            }
+          },
+          {
+            "direction": "incoming",
+            "source": "orders-service",
+            "type": "depends_on",
+            "target": "billing-api",
+            "evidence": {
+              "repository": "acme/platform",
+              "path": "catalog-info.yaml",
+              "line_start": 10
+            }
+          }
+        ],
+        "exhaustive": true
+      }
+    },
+    {
+      "id": "dep-payments-db-incoming",
+      "scenario": "explicit_dependencies",
+      "tool": "find_related",
+      "args": {
+        "entity": "payments-db",
+        "direction": "incoming"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "incoming",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "payments-db"
+          },
+          {
+            "direction": "incoming",
+            "source": "ledger-service",
+            "type": "depends_on",
+            "target": "payments-db",
+            "evidence": {
+              "repository": "acme/payments",
+              "path": "docker-compose.yml",
+              "line_start": 12
+            }
+          }
+        ],
+        "exhaustive": true
+      }
+    },
+    {
+      "id": "tf-module-v14-refs",
+      "scenario": "terraform_module_references",
+      "tool": "find_related",
+      "args": {
+        "entity": "git::https://github.com/acme/terraform-modules.git//sqs-queue?ref=v1.4.0",
+        "direction": "incoming"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "incoming",
+            "source": "module.billing_queue",
+            "type": "references",
+            "target": "git::https://github.com/acme/terraform-modules.git//sqs-queue?ref=v1.4.0",
+            "evidence": {
+              "repository": "acme/payments",
+              "path": "infra/main.tf",
+              "line_start": 4
+            }
+          },
+          {
+            "direction": "incoming",
+            "source": "module.orders_queue",
+            "type": "references",
+            "target": "git::https://github.com/acme/terraform-modules.git//sqs-queue?ref=v1.4.0",
+            "evidence": {
+              "repository": "acme/platform",
+              "path": "terraform/envs/prod/main.tf",
+              "line_start": 8
+            }
+          }
+        ],
+        "exhaustive": true
+      }
+    },
+    {
+      "id": "tf-module-v12-refs",
+      "scenario": "terraform_module_references",
+      "tool": "find_related",
+      "args": {
+        "entity": "git::https://github.com/acme/terraform-modules.git//sqs-queue?ref=v1.2.0"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "incoming",
+            "source": "module.orders_queue",
+            "type": "references",
+            "target": "git::https://github.com/acme/terraform-modules.git//sqs-queue?ref=v1.2.0",
+            "evidence": {
+              "repository": "acme/platform",
+              "path": "terraform/envs/staging/main.tf",
+              "line_start": 2
+            }
+          }
+        ],
+        "exhaustive": true
+      }
+    },
+    {
+      "id": "tf-resource-refs",
+      "scenario": "terraform_module_references",
+      "tool": "find_related",
+      "args": {
+        "entity": "aws_db_instance.payments_db",
+        "direction": "incoming"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "incoming",
+            "source": "aws_ecs_task_definition.billing_api",
+            "type": "references",
+            "target": "aws_db_instance.payments_db",
+            "evidence": {
+              "repository": "acme/payments",
+              "path": "infra/main.tf",
+              "line_start": 20
+            }
+          },
+          {
+            "direction": "incoming",
+            "source": "aws_ecs_task_definition.billing_api",
+            "type": "depends_on",
+            "target": "aws_db_instance.payments_db",
+            "evidence": {
+              "repository": "acme/payments",
+              "path": "infra/main.tf",
+              "line_start": 24
+            }
+          }
+        ],
+        "exhaustive": true
+      }
+    },
+    {
+      "id": "tf-module-output-ref",
+      "scenario": "terraform_module_references",
+      "tool": "find_related",
+      "args": {
+        "entity": "module.billing_queue",
+        "direction": "incoming"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "incoming",
+            "source": "aws_ecs_task_definition.billing_api",
+            "type": "references",
+            "target": "module.billing_queue",
+            "evidence": {
+              "repository": "acme/payments",
+              "path": "infra/main.tf",
+              "line_start": 21
+            }
+          }
+        ],
+        "exhaustive": true
+      }
+    },
+    {
+      "id": "tf-vpc-registry-module",
+      "scenario": "terraform_module_references",
+      "tool": "find_related",
+      "args": {
+        "entity": "terraform-aws-modules/vpc/aws"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "incoming",
+            "source": "module.vpc",
+            "type": "references",
+            "target": "terraform-aws-modules/vpc/aws",
+            "evidence": {
+              "repository": "acme/platform",
+              "path": "terraform/envs/prod/main.tf",
+              "line_start": 2
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "tf-search-sqs-module",
+      "scenario": "terraform_module_references",
+      "tool": "search_context",
+      "args": {
+        "query": "sqs-queue terraform module source",
+        "k": 10
+      },
+      "expect": {
+        "relevant": [
+          "github:acme/payments:file:infra/main.tf",
+          "github:acme/platform:file:terraform/envs/prod/main.tf",
+          "github:acme/platform:file:terraform/envs/staging/main.tf"
+        ],
+        "relevant_in_top": 5
+      }
+    },
+    {
+      "id": "adr-ledger-postgres",
+      "scenario": "architecture_decision",
+      "tool": "search_context",
+      "args": {
+        "query": "why does ledger-service store balances in PostgreSQL decision",
+        "k": 10
+      },
+      "expect": {
+        "relevant": [
+          "github:acme/payments:file:docs/adr/0007-ledger-on-postgres.md"
+        ],
+        "relevant_in_top": 3
+      }
+    },
+    {
+      "id": "adr-queue-per-domain",
+      "scenario": "architecture_decision",
+      "tool": "search_context",
+      "args": {
+        "query": "decision one SQS queue per domain not shared",
+        "k": 10
+      },
+      "expect": {
+        "relevant": [
+          "github:acme/platform:file:docs/adr/0002-queue-per-domain.md"
+        ],
+        "relevant_in_top": 3
+      }
+    },
+    {
+      "id": "adr-open-evidence",
+      "scenario": "architecture_decision",
+      "tool": "get_document",
+      "args": {
+        "document_id": "github:acme/payments:file:docs/adr/0007-ledger-on-postgres.md",
+        "line_start": 12,
+        "line_end": 13
+      },
+      "expect": {
+        "found": true,
+        "excerpt_contains": "ledger-service stores balances",
+        "has_fields": [
+          "path",
+          "revision",
+          "indexed_at"
+        ]
+      }
+    },
+    {
+      "id": "cross-doc-support",
+      "scenario": "cross_document",
+      "tool": "find_related",
+      "args": {
+        "entity": "billing-api",
+        "direction": "outgoing",
+        "relationship_types": [
+          "depends_on"
+        ]
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "outgoing",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "payments-db"
+          }
+        ]
+      }
+    },
+    {
+      "id": "cross-repo-dependency",
+      "scenario": "cross_document",
+      "tool": "find_related",
+      "args": {
+        "entity": "billing-api",
+        "direction": "incoming"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "incoming",
+            "source": "orders-service",
+            "type": "depends_on",
+            "target": "billing-api",
+            "evidence": {
+              "repository": "acme/platform"
+            }
+          }
+        ],
+        "only_repos": [
+          "acme/platform",
+          "acme/payments"
+        ]
+      }
+    },
+    {
+      "id": "cross-doc-orders-db",
+      "scenario": "cross_document",
+      "tool": "find_related",
+      "args": {
+        "entity": "orders-db",
+        "direction": "incoming"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "incoming",
+            "source": "orders-service",
+            "type": "depends_on",
+            "target": "orders-db",
+            "evidence": {
+              "repository": "acme/platform",
+              "path": "docker-compose.yml",
+              "line_start": 5
+            }
+          },
+          {
+            "direction": "incoming",
+            "source": "orders-service",
+            "type": "depends_on",
+            "target": "orders-db",
+            "evidence": {
+              "repository": "acme/platform",
+              "path": "catalog-info.yaml",
+              "line_start": 11
+            }
+          }
+        ],
+        "exhaustive": true
+      }
+    },
+    {
+      "id": "similar-billing-not-v2",
+      "scenario": "similar_names",
+      "tool": "find_related",
+      "args": {
+        "entity": "billing-api"
+      },
+      "expect": {
+        "forbid_targets": [
+          "oracle-db"
+        ],
+        "min_candidates": 2
+      }
+    },
+    {
+      "id": "similar-v2-not-billing",
+      "scenario": "similar_names",
+      "tool": "find_related",
+      "args": {
+        "entity": "billing-api-v2"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "outgoing",
+            "source": "billing-api-v2",
+            "type": "depends_on",
+            "target": "oracle-db",
+            "evidence": {
+              "repository": "acme/legacy-billing",
+              "path": "docker-compose.yml",
+              "line_start": 5
+            }
+          }
+        ],
+        "forbid_targets": [
+          "payments-db",
+          "redis"
+        ]
+      }
+    },
+    {
+      "id": "similar-typed-component",
+      "scenario": "similar_names",
+      "tool": "find_related",
+      "args": {
+        "entity": "component:billing-api",
+        "direction": "incoming"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "incoming",
+            "source": "orders-service",
+            "type": "depends_on",
+            "target": "billing-api",
+            "evidence": {
+              "repository": "acme/platform",
+              "path": "catalog-info.yaml",
+              "line_start": 10
+            }
+          }
+        ],
+        "exhaustive": true
+      }
+    },
+    {
+      "id": "similar-entities-distinct",
+      "scenario": "similar_names",
+      "tool": "list_entities",
+      "args": {
+        "entity_type": "service",
+        "k": 50
+      },
+      "expect": {
+        "include": [
+          [
+            "service",
+            "billing-api"
+          ],
+          [
+            "service",
+            "billing-api-v2"
+          ]
+        ],
+        "no_case_duplicates": true
+      }
+    },
+    {
+      "id": "similar-search-v2",
+      "scenario": "similar_names",
+      "tool": "search_context",
+      "args": {
+        "query": "billing-api-v2 oracle-db",
+        "k": 10
+      },
+      "expect": {
+        "relevant": [
+          "github:acme/legacy-billing:file:docker-compose.yml",
+          "github:acme/legacy-billing:file:catalog-info.yaml"
+        ],
+        "relevant_in_top": 5
+      }
+    },
+    {
+      "id": "stale-dependency-removed",
+      "scenario": "stale_information",
+      "tool": "find_related",
+      "args": {
+        "entity": "billing-api",
+        "direction": "outgoing"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "outgoing",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "valkey",
+            "evidence": {
+              "repository": "acme/payments",
+              "path": "docker-compose.yml",
+              "line_start": 8
+            }
+          }
+        ],
+        "forbid_edges": [
+          {
+            "direction": "outgoing",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "redis"
+          }
+        ]
+      },
+      "mutations": [
+        {
+          "op": "write",
+          "path": "payments/docker-compose.yml",
+          "content": "services:\n  billing-api:\n    image: acme/billing-api:1.43.0\n    ports:\n      - \"8080:8080\"\n    depends_on:\n      - payments-db\n      - valkey\n  ledger-service:\n    image: acme/ledger-service:2.3.1\n    depends_on:\n      - payments-db\n  payments-db:\n    image: postgres:16\n  valkey:\n    image: valkey/valkey:8\n"
+        }
+      ]
+    },
+    {
+      "id": "stale-document-updated",
+      "scenario": "stale_information",
+      "tool": "get_document",
+      "args": {
+        "document_id": "github:acme/payments:file:docker-compose.yml"
+      },
+      "expect": {
+        "found": true,
+        "text_contains": "valkey",
+        "text_excludes": "redis:7"
+      },
+      "mutations": [
+        {
+          "op": "write",
+          "path": "payments/docker-compose.yml",
+          "content": "services:\n  billing-api:\n    image: acme/billing-api:1.43.0\n    ports:\n      - \"8080:8080\"\n    depends_on:\n      - payments-db\n      - valkey\n  ledger-service:\n    image: acme/ledger-service:2.3.1\n    depends_on:\n      - payments-db\n  payments-db:\n    image: postgres:16\n  valkey:\n    image: valkey/valkey:8\n"
+        }
+      ]
+    },
+    {
+      "id": "stale-merged-vs-proposal",
+      "scenario": "stale_information",
+      "tool": "get_document",
+      "args": {
+        "document_id": "github:acme/payments:pr:41"
+      },
+      "expect": {
+        "found": true,
+        "has_fields": [
+          "state",
+          "updated_at"
+        ]
+      }
+    },
+    {
+      "id": "stale-freshness-fields",
+      "scenario": "stale_information",
+      "tool": "search_context",
+      "args": {
+        "query": "billing-api session cache redis memcached",
+        "k": 5
+      },
+      "expect": {
+        "relevant": [
+          "github:acme/payments:pr:40"
+        ],
+        "relevant_in_top": 3
+      }
+    },
+    {
+      "id": "missing-entity",
+      "scenario": "missing_evidence",
+      "tool": "find_related",
+      "args": {
+        "entity": "kafka"
+      },
+      "expect": {
+        "evidence_status": "none",
+        "edges": []
+      }
+    },
+    {
+      "id": "missing-out-of-scope-repo",
+      "scenario": "missing_evidence",
+      "tool": "search_context",
+      "args": {
+        "query": "billing",
+        "filters": {
+          "repo": "acme/not-configured"
+        }
+      },
+      "expect": {
+        "only_repos": []
+      }
+    },
+    {
+      "id": "missing-out-of-scope-doc",
+      "scenario": "missing_evidence",
+      "tool": "get_document",
+      "args": {
+        "document_id": "github:acme/not-configured:readme:readme"
+      },
+      "expect": {
+        "found": false
+      }
+    },
+    {
+      "id": "missing-mentions-only",
+      "scenario": "missing_evidence",
+      "tool": "find_related",
+      "args": {
+        "entity": "fraud-check"
+      },
+      "expect": {
+        "edges": []
+      }
+    },
+    {
+      "id": "deleted-adr-search",
+      "scenario": "deleted_or_renamed",
+      "tool": "search_context",
+      "args": {
+        "query": "why does ledger-service store balances in PostgreSQL decision",
+        "k": 10
+      },
+      "expect": {
+        "forbid_documents": [
+          "github:acme/payments:file:docs/adr/0007-ledger-on-postgres.md"
+        ]
+      },
+      "mutations": [
+        {
+          "op": "delete",
+          "path": "payments/docs/adr/0007-ledger-on-postgres.md"
+        }
+      ]
+    },
+    {
+      "id": "deleted-adr-get",
+      "scenario": "deleted_or_renamed",
+      "tool": "get_document",
+      "args": {
+        "document_id": "github:acme/payments:file:docs/adr/0007-ledger-on-postgres.md"
+      },
+      "expect": {
+        "found": false
+      },
+      "mutations": [
+        {
+          "op": "delete",
+          "path": "payments/docs/adr/0007-ledger-on-postgres.md"
+        }
+      ]
+    },
+    {
+      "id": "deleted-descriptors",
+      "scenario": "deleted_or_renamed",
+      "tool": "find_related",
+      "args": {
+        "entity": "billing-api-v2"
+      },
+      "expect": {
+        "edges": [],
+        "evidence_status": "none"
+      },
+      "mutations": [
+        {
+          "op": "delete",
+          "path": "legacy-billing/docker-compose.yml"
+        },
+        {
+          "op": "delete",
+          "path": "legacy-billing/catalog-info.yaml"
+        }
+      ]
+    },
+    {
+      "id": "renamed-compose",
+      "scenario": "deleted_or_renamed",
+      "tool": "find_related",
+      "args": {
+        "entity": "orders-service",
+        "direction": "outgoing",
+        "relationship_types": [
+          "depends_on"
+        ]
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "outgoing",
+            "source": "orders-service",
+            "type": "depends_on",
+            "target": "billing-api",
+            "evidence": {
+              "repository": "acme/platform",
+              "path": "deploy/docker-compose.yml",
+              "line_start": 6
+            }
+          }
+        ],
+        "forbid_edges": []
+      },
+      "mutations": [
+        {
+          "op": "rename",
+          "path": "platform/docker-compose.yml",
+          "to": "platform/deploy/docker-compose.yml"
+        }
+      ]
+    },
+    {
+      "id": "renamed-old-id-gone",
+      "scenario": "deleted_or_renamed",
+      "tool": "get_document",
+      "args": {
+        "document_id": "github:acme/platform:file:docker-compose.yml"
+      },
+      "expect": {
+        "found": false
+      },
+      "mutations": [
+        {
+          "op": "rename",
+          "path": "platform/docker-compose.yml",
+          "to": "platform/deploy/docker-compose.yml"
+        }
+      ]
+    },
+    {
+      "id": "trace-compose-line",
+      "scenario": "trace_to_source",
+      "tool": "get_document",
+      "args": {
+        "document_id": "github:acme/payments:file:docker-compose.yml",
+        "line_start": 6,
+        "line_end": 8
+      },
+      "expect": {
+        "found": true,
+        "excerpt_contains": "- redis",
+        "has_fields": [
+          "revision",
+          "path"
+        ]
+      }
+    },
+    {
+      "id": "trace-terraform-line",
+      "scenario": "trace_to_source",
+      "tool": "get_document",
+      "args": {
+        "document_id": "github:acme/payments:file:infra/main.tf",
+        "line_start": 20,
+        "line_end": 20
+      },
+      "expect": {
+        "found": true,
+        "excerpt_contains": "aws_db_instance.payments_db.address"
+      }
+    },
+    {
+      "id": "trace-catalog-line",
+      "scenario": "trace_to_source",
+      "tool": "get_document",
+      "args": {
+        "document_id": "github:acme/payments:file:catalog-info.yaml",
+        "line_start": 11,
+        "line_end": 11
+      },
+      "expect": {
+        "found": true,
+        "excerpt_contains": "resource:payments-db"
+      }
+    },
+    {
+      "id": "repo-filter-search",
+      "scenario": "repository_filter",
+      "tool": "search_context",
+      "args": {
+        "query": "billing-api depends on database",
+        "filters": {
+          "repo": "acme/legacy-billing"
+        },
+        "k": 10
+      },
+      "expect": {
+        "only_repos": [
+          "acme/legacy-billing"
+        ]
+      }
+    },
+    {
+      "id": "repo-filter-related",
+      "scenario": "repository_filter",
+      "tool": "find_related",
+      "args": {
+        "entity": "billing-api",
+        "repo": "acme/platform"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "incoming",
+            "source": "orders-service",
+            "type": "depends_on",
+            "target": "billing-api",
+            "evidence": {
+              "repository": "acme/platform"
+            }
+          }
+        ],
+        "forbid_edges": [
+          {
+            "direction": "outgoing",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "payments-db"
+          }
+        ],
+        "only_repos": [
+          "acme/platform"
+        ]
+      }
+    },
+    {
+      "id": "repo-filter-entities",
+      "scenario": "repository_filter",
+      "tool": "list_entities",
+      "args": {
+        "repo": "acme/legacy-billing",
+        "k": 50
+      },
+      "expect": {
+        "include": [
+          [
+            "service",
+            "billing-api-v2"
+          ]
+        ],
+        "exclude": [
+          [
+            "service",
+            "ledger-service"
+          ],
+          [
+            "service",
+            "billing-api"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "repo-filter-tf-resources",
+      "scenario": "repository_filter",
+      "tool": "list_entities",
+      "args": {
+        "entity_type": "terraform_resource",
+        "k": 50
+      },
+      "expect": {
+        "include": [
+          [
+            "terraform_resource",
+            "aws_db_instance.payments_db"
+          ],
+          [
+            "terraform_resource",
+            "aws_db_instance.orders_db"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "llm-issue-dependency",
+      "scenario": "explicit_dependencies",
+      "tool": "find_related",
+      "args": {
+        "entity": "billing-api",
+        "direction": "incoming"
+      },
+      "expect": {
+        "edges": [
+          {
+            "direction": "incoming",
+            "source": "checkout-service",
+            "type": "depends_on",
+            "target": "billing-api",
+            "evidence": {
+              "repository": "acme/payments"
+            }
+          }
+        ]
+      },
+      "requires": "llm"
+    },
+    {
+      "id": "llm-readme-services",
+      "scenario": "cross_document",
+      "tool": "list_entities",
+      "args": {
+        "repo": "acme/payments",
+        "k": 50
+      },
+      "expect": {
+        "include": [
+          [
+            "service",
+            "billing-api"
+          ],
+          [
+            "service",
+            "ledger-service"
+          ]
+        ]
+      },
+      "requires": "llm"
+    }
+  ]
+}

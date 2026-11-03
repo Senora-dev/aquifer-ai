@@ -35,3 +35,9 @@ cdk.out/
 
 # Claude Code local config
 .claude/
+
+# Aquifer local mode index
+.aquifer-local/
+
+# Benchmark reports
+benchmark-report*.json

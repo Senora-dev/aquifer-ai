@@ -25,3 +25,11 @@ class DenyInterceptor(Interceptor):
 
     def authorize(self, principal, action, resource) -> bool:  # noqa: ANN001
         return False
+
+
+class RepoScopeInterceptor(Interceptor):
+    """The tenant-scoping example from docs/contributing.md: restrict every query to a repo."""
+
+    def before_query(self, ctx: QueryContext) -> QueryContext:
+        ctx.filters = {**ctx.filters, "repo": "acme/legacy"}
+        return ctx

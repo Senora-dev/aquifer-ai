@@ -11,9 +11,11 @@ Concrete adapters (Bedrock, OpenSearch, GitHub) read these values when construct
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
+from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Environment variable prefix, e.g. AQUIFER_OPENSEARCH__ENDPOINT.
@@ -39,6 +41,13 @@ class EmbeddingSettings(_Base):
     region: str = "us-east-1"
     # Max texts per Bedrock request (Titan embeds one at a time; batching is client-side).
     batch_size: int = 16
+    # "bedrock" (production) or "hashing": a deterministic, local, *lexical* embedder for
+    # offline tests, the benchmark and the no-AWS demo. It is not a semantic model.
+    provider: Literal["bedrock", "hashing"] = "bedrock"
+    # botocore retry/timeouts for Bedrock calls (standard mode = exponential backoff + jitter).
+    max_attempts: int = 6
+    read_timeout_s: int = 60
+    connect_timeout_s: int = 10
 
 
 class VectorStoreSettings(_Base):
@@ -55,6 +64,13 @@ class VectorStoreSettings(_Base):
     space_type: str = "cosinesimil"
     # Default number of results returned by a search.
     default_k: int = 10
+    # "opensearch" (production) or "memory": an in-process store for tests and the local demo,
+    # optionally persisted to ``memory_path`` as JSON.
+    backend: Literal["opensearch", "memory"] = "opensearch"
+    memory_path: str = ""
+    # opensearch-py client retries for 429/5xx/timeouts.
+    max_retries: int = 3
+    timeout_s: int = 30
 
 
 class GitHubSettings(_Base):
@@ -63,10 +79,51 @@ class GitHubSettings(_Base):
     api_url: str = "https://api.github.com"
     # ARN/name of the Secrets Manager secret holding the GitHub token.
     token_secret: str = ""
-    # Comma-separated org/repo allowlist, e.g. "myorg/*,otherorg/repo".
+    # JSON array of exact "owner/repo" names, e.g. ["acme/billing", "acme/infra"].
+    # Wildcards are not supported. Every listed repository is one trust domain: any
+    # authenticated MCP client can read all of them.
     repo_allowlist: list[str] = Field(default_factory=list)
     # Page size for REST list calls (GitHub max is 100).
     page_size: int = 100
+    # Repository files to ingest at the default branch head (glob, "**" = any directories).
+    # Defaults cover the formats with deterministic extractors plus architecture decision
+    # records. Set to [] to ingest only READMEs, issues and PRs.
+    file_globs: list[str] = Field(
+        default_factory=lambda: [
+            "**/*.tf",
+            "**/docker-compose*.yml",
+            "**/docker-compose*.yaml",
+            "**/compose.yml",
+            "**/compose.yaml",
+            "**/catalog-info.yaml",
+            "**/catalog-info.yml",
+            "**/adr/**/*.md",
+            "**/adrs/**/*.md",
+            "**/decisions/**/*.md",
+        ]
+    )
+    max_files_per_repo: int = 1000
+    max_file_bytes: int = 262_144
+    files_per_page: int = 25
+    # In-process retries for 5xx / network errors (bounded, exponential backoff).
+    request_retries: int = 3
+    # Rate-limit waits up to this many seconds are slept in-process; longer waits re-enqueue
+    # the job with an SQS delay instead.
+    max_inline_rate_limit_wait_s: int = 30
+
+    @field_validator("repo_allowlist")
+    @classmethod
+    def _validate_repos(cls, repos: list[str]) -> list[str]:
+        bad = [r for r in repos if not _REPO_RE.fullmatch(r or "")]
+        if bad:
+            raise ValueError(
+                f"repo_allowlist entries must be exact 'owner/repo' names (no wildcards); "
+                f"invalid: {bad}"
+            )
+        return repos
+
+
+_REPO_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}")
 
 
 class IngestionSettings(_Base):
@@ -80,6 +137,15 @@ class IngestionSettings(_Base):
     # Chunking: token-ish target sizes for the splitter (see core.chunking).
     chunk_size: int = 800
     chunk_overlap: int = 100
+    # Each run re-reads this many seconds before the previous watermark, so items updated
+    # around a run boundary (or with clock skew) are not missed. Re-reads are cheap because
+    # unchanged documents are skipped by content hash.
+    watermark_overlap_s: int = 300
+    # Remove indexed documents of repositories no longer in the allowlist (each discovery run).
+    purge_unlisted_repos: bool = True
+    # Rate-limited jobs are re-enqueued with a delay at most this many times before failing
+    # into the DLQ.
+    max_rate_limit_requeues: int = 12
 
 
 class SemanticIndexSettings(_Base):
@@ -98,6 +164,11 @@ class SemanticIndexSettings(_Base):
     temperature: float = 0.0
     # Truncate very large bodies before extraction to bound token cost/latency.
     max_input_chars: int = 12000
+    # Deterministic parsers (Terraform, docker-compose, Backstage). Free, local, always safe.
+    structured_extraction_enabled: bool = True
+    # Also run the LLM on files a deterministic parser handled. Off by default: the parser's
+    # explicit references are more precise and the LLM call costs money.
+    llm_for_structured_files: bool = False
 
 
 class McpSettings(_Base):
@@ -107,6 +178,13 @@ class McpSettings(_Base):
     port: int = 8080
     # Default number of results a search returns when the caller does not specify k.
     default_k: int = 10
+    # Upper bound on k for every tool (protects the store and the agent's context window).
+    max_k: int = 50
+    # "token": every HTTP request must carry ``Authorization: Bearer <token>``.
+    # "none": no authentication — only permitted when ``host`` is a loopback address.
+    auth_mode: Literal["token", "none"] = "token"
+    # {"principal-name": "token"} — injected from Secrets Manager in the deployed stack.
+    auth_tokens: dict[str, str] = Field(default_factory=dict, repr=False)
 
 
 class Settings(_Base):

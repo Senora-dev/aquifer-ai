@@ -12,8 +12,13 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --upgrade pip && pip install ".[aws,mcp]"
 
+# Run as an unprivileged user; the task also mounts the root filesystem read-only.
+RUN useradd --system --uid 10001 --no-create-home aquifer
+USER 10001
+
 # The MCP server listens on the configured port (default 8080).
 EXPOSE 8080
 
-# Runtime configuration is injected by the CDK stack as AQUIFER_* env vars.
+# Runtime configuration is injected by the CDK stack as AQUIFER_* env vars; the bearer-token
+# map arrives as a secret (AQUIFER_MCP__AUTH_TOKENS). The server refuses to start without it.
 CMD ["python", "-m", "aquifer.mcp.server"]

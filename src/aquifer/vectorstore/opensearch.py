@@ -3,37 +3,48 @@
 Implements :class:`aquifer.core.interfaces.VectorStore` against an AOSS *vector search*
 collection using the k-NN query API. SigV4 request signing uses the ``aoss`` service name.
 
-Design notes:
-- Chunk ids are deterministic, so ``upsert`` indexes with an explicit ``_id`` and is idempotent.
-- ``delete_by_document`` removes a document's prior chunks before re-ingestion of an edit, so
-  stale chunks never linger when a GitHub item's text changes.
-- The boto3/opensearch-py clients are created lazily and can be injected for testing.
+Design constraints (from the AOSS "supported operations" reference):
+
+- **No custom document ids.** Classic vector collections reject ``_id`` on index/create, so
+  chunks are written with system-generated ids. Our logical ``chunk_id`` is a stored field.
+- **No ``_delete_by_query``.** Deletes are a search for the matching ``_id``s followed by bulk
+  ``delete`` actions.
+- **Eventual consistency.** Writes become searchable after the refresh interval (up to 60s on
+  Classic collections), so replacement is *write the new generation, then delete older
+  generations* — never delete-then-write. Readers prefer the newest generation if two are
+  briefly visible.
+
+The boto3/opensearch-py clients are created lazily and can be injected for testing.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from typing import Any
 
 from aquifer.core.config import VectorStoreSettings, get_settings
+from aquifer.core.errors import TransientError, log_event
 from aquifer.core.interfaces import VectorStore
-from aquifer.core.models import SearchResult
+from aquifer.core.models import IndexedState, SearchResult
+from aquifer.vectorstore.schema import (
+    DATE_FIELDS,
+    FILTERABLE_FIELDS,
+    INTEGER_FIELDS,
+    KEYWORD_FIELDS,
+    chunk_to_source,
+    source_to_result,
+    validate_filters,
+)
 
-# Document fields that are safe to expose as query filters. Includes the flattened semantic
-# fields so agents can retrieve by objective entity/relationship without any interpretation.
-_FILTERABLE_FIELDS = {
-    "document_id",
-    "source_type",
-    "kind",
-    "repo",
-    "author",
-    "labels",
-    "entity_names",
-    "entity_types",
-    "topics",
-    "relationship_targets",
-    "relationship_types",
-}
+logger = logging.getLogger(__name__)
+
+# Kept for backwards compatibility with code that imported the private name.
+_FILTERABLE_FIELDS = FILTERABLE_FIELDS
+
+_PAGE = 500
+_MAX_SCAN = 10_000  # from+size ceiling for a plain search
+_SOURCE_EXCLUDES = {"excludes": ["vector"]}
 
 
 class AossVectorStore(VectorStore):
@@ -70,119 +81,183 @@ class AossVectorStore(VectorStore):
                 verify_certs=True,
                 connection_class=RequestsHttpConnection,
                 pool_maxsize=20,
+                timeout=self._settings.timeout_s,
+                max_retries=self._settings.max_retries,
+                retry_on_timeout=True,
+                retry_on_status=(429, 502, 503, 504),
             )
         return self._client
 
+    @property
+    def _index(self) -> str:
+        return self._settings.index
+
     # --- schema ----------------------------------------------------------
+
+    def _properties(self) -> dict:
+        props: dict = {
+            "vector": {
+                "type": "knn_vector",
+                "dimension": self._dimensions,
+                "method": {
+                    "name": "hnsw",
+                    "engine": self._settings.engine,
+                    "space_type": self._settings.space_type,
+                },
+            },
+            "text": {"type": "text"},
+            "title": {"type": "text"},
+            # Neutral semantic metadata. Flattened keyword arrays make entities and
+            # relationships efficiently filterable; the full objects ride in _source only.
+            "summary": {"type": "text"},
+            "entities": {"type": "object", "enabled": False},
+            "relationships": {"type": "object", "enabled": False},
+        }
+        props.update({f: {"type": "keyword"} for f in KEYWORD_FIELDS})
+        props.update({f: {"type": "date"} for f in DATE_FIELDS})
+        props.update({f: {"type": "integer"} for f in INTEGER_FIELDS})
+        return props
 
     def _index_body(self) -> dict:
         return {
             "settings": {"index": {"knn": True}},
-            "mappings": {
-                "properties": {
-                    "vector": {
-                        "type": "knn_vector",
-                        "dimension": self._dimensions,
-                        "method": {
-                            "name": "hnsw",
-                            "engine": self._settings.engine,
-                            "space_type": self._settings.space_type,
-                        },
-                    },
-                    "text": {"type": "text"},
-                    "document_id": {"type": "keyword"},
-                    "chunk_index": {"type": "integer"},
-                    "overlap_words": {"type": "integer"},
-                    "source_type": {"type": "keyword"},
-                    "kind": {"type": "keyword"},
-                    "repo": {"type": "keyword"},
-                    "title": {"type": "text"},
-                    "url": {"type": "keyword"},
-                    "author": {"type": "keyword"},
-                    "created_at": {"type": "date"},
-                    "updated_at": {"type": "date"},
-                    "labels": {"type": "keyword"},
-                    # Neutral semantic metadata. Flattened keyword arrays make entities and
-                    # relationships efficiently filterable; the full objects ride in _source.
-                    "summary": {"type": "text"},
-                    "entities": {"type": "object"},
-                    "entity_names": {"type": "keyword"},
-                    "entity_types": {"type": "keyword"},
-                    "topics": {"type": "keyword"},
-                    "relationships": {"type": "object"},
-                    "relationship_targets": {"type": "keyword"},
-                    "relationship_types": {"type": "keyword"},
-                }
-            },
+            "mappings": {"properties": self._properties()},
         }
 
     def ensure_index(self) -> None:
-        if not self.client.indices.exists(index=self._settings.index):
-            self.client.indices.create(index=self._settings.index, body=self._index_body())
+        """Create the index, or add any fields introduced since it was created (idempotent)."""
+        if not self.client.indices.exists(index=self._index):
+            self.client.indices.create(index=self._index, body=self._index_body())
+            return
+        # Adding new fields to an existing mapping is allowed; changing existing ones is not, so
+        # only the non-vector fields are sent and a conflict is logged rather than fatal.
+        # ``entities``/``relationships`` are excluded: older indexes mapped them as dynamic
+        # objects and toggling ``enabled`` is a rejected mapping change.
+        props = {
+            k: v
+            for k, v in self._properties().items()
+            if k not in {"vector", "entities", "relationships"}
+        }
+        try:
+            self.client.indices.put_mapping(index=self._index, body={"properties": props})
+        except Exception as exc:  # noqa: BLE001 - mapping drift must not stop ingestion
+            log_event(
+                logger,
+                "index_mapping_update_failed",
+                level=logging.WARNING,
+                index=self._index,
+                error=type(exc).__name__,
+            )
 
     # --- writes ----------------------------------------------------------
 
     @staticmethod
-    def _to_source(chunk) -> dict:  # noqa: ANN001 - Chunk, avoids import cycle in signature
-        def _iso(dt):
-            return dt.isoformat() if dt is not None else None
+    def _to_source(chunk) -> dict:  # noqa: ANN001 - kept for backwards compatibility
+        return chunk_to_source(chunk)
 
-        return {
-            "vector": chunk.embedding,
-            "text": chunk.text,
-            "document_id": chunk.document_id,
-            "chunk_index": chunk.index,
-            "overlap_words": chunk.overlap_words,
-            "source_type": str(chunk.source_type),
-            "kind": str(chunk.kind),
-            "repo": chunk.repo,
-            "title": chunk.title,
-            "url": chunk.url,
-            "author": chunk.author,
-            "created_at": _iso(chunk.created_at),
-            "updated_at": _iso(chunk.updated_at),
-            "labels": chunk.labels,
-            # Neutral semantic metadata: full structured objects plus flattened keyword arrays.
-            "summary": chunk.summary,
-            "entities": [e.model_dump() for e in chunk.entities],
-            "entity_names": [e.name for e in chunk.entities],
-            "entity_types": [e.type for e in chunk.entities],
-            "topics": chunk.topics,
-            "relationships": [r.model_dump() for r in chunk.relationships],
-            "relationship_targets": [r.target for r in chunk.relationships],
-            "relationship_types": [r.type for r in chunk.relationships],
-        }
-
-    def upsert(self, chunks: Sequence) -> None:
-        if not chunks:
+    def _bulk(self, actions: list[dict], operation: str) -> None:
+        if not actions:
             return
-        actions: list[dict] = []
-        for chunk in chunks:
-            actions.append({"index": {"_index": self._settings.index, "_id": chunk.chunk_id}})
-            actions.append(self._to_source(chunk))
         response = self.client.bulk(body=actions)
         if response.get("errors"):
             failed = [
                 item for item in response.get("items", [])
                 if next(iter(item.values())).get("error")
             ]
-            raise RuntimeError(f"AOSS bulk upsert had {len(failed)} failed item(s)")
+            statuses = {next(iter(i.values())).get("status") for i in failed}
+            if operation == "delete":
+                # A 404 on delete means "already gone" — that is success for us.
+                failed = [i for i in failed if next(iter(i.values())).get("status") != 404]
+                if not failed:
+                    return
+            message = f"AOSS bulk {operation} had {len(failed)} failed item(s)"
+            if statuses & {429, 500, 502, 503, 504}:
+                raise TransientError(message)
+            raise RuntimeError(message)
+
+    def upsert(self, chunks: Sequence) -> None:
+        if not chunks:
+            return
+        actions: list[dict] = []
+        for chunk in chunks:
+            # No "_id": Classic vector collections reject custom document ids.
+            actions.append({"index": {"_index": self._index}})
+            actions.append(chunk_to_source(chunk))
+        self._bulk(actions, "index")
+
+    def _search(self, body: dict) -> dict:
+        return self.client.search(index=self._index, body=body)
+
+    def _scan(self, query: dict, fields: list[str]) -> list[dict]:
+        """Return ``{"_id", **fields}`` for every hit of ``query`` (up to 10k)."""
+        hits: list[dict] = []
+        start = 0
+        while start < _MAX_SCAN:
+            body = {
+                "from": start,
+                "size": _PAGE,
+                "query": query,
+                "_source": {"includes": fields},
+            }
+            page = self._search(body).get("hits", {}).get("hits", [])
+            for hit in page:
+                hits.append({"_id": hit.get("_id"), **(hit.get("_source") or {})})
+            if len(page) < _PAGE:
+                break
+            start += _PAGE
+        return hits
+
+    def _delete_ids(self, ids: list[str]) -> None:
+        for i in range(0, len(ids), _PAGE):
+            batch = ids[i : i + _PAGE]
+            self._bulk([{"delete": {"_index": self._index, "_id": _id}} for _id in batch],
+                       "delete")
+
+    def replace_document(self, document_id: str, chunks: Sequence) -> None:
+        """Write the new generation, then delete older generations of the same document."""
+        if not chunks:
+            self.delete_by_document(document_id)
+            return
+        self.upsert(chunks)
+        generation = chunks[0].generation
+        updated_at = chunks[0].updated_at
+        existing = self._scan(
+            {"term": {"document_id": document_id}}, ["generation", "updated_at"]
+        )
+        stale = []
+        for hit in existing:
+            if generation is not None and hit.get("generation") == generation:
+                continue
+            # Never delete a generation of a *newer* upstream version written concurrently.
+            their = hit.get("updated_at")
+            if updated_at is not None and their and their > updated_at.isoformat():
+                continue
+            stale.append(hit["_id"])
+        self._delete_ids(stale)
 
     def delete_by_document(self, document_id: str) -> None:
-        self.client.delete_by_query(
-            index=self._settings.index,
-            body={"query": {"term": {"document_id": document_id}}},
-        )
+        self.delete_by_filter({"document_id": document_id})
+
+    def delete_documents(self, document_ids: Sequence[str]) -> None:
+        if document_ids:
+            self.delete_by_filter({"document_id": list(document_ids)})
+
+    def delete_by_filter(self, filters: dict) -> int:
+        query = self._build_filter(filters)
+        if query is None:
+            raise ValueError("delete_by_filter requires at least one filter")
+        ids = [h["_id"] for h in self._scan(query, ["document_id"])]
+        self._delete_ids(ids)
+        return len(ids)
 
     # --- reads -----------------------------------------------------------
 
     def _build_filter(self, filters: dict | None) -> dict | None:
+        filters = validate_filters(filters)
         if not filters:
             return None
         clauses = []
         for field, value in filters.items():
-            if field not in _FILTERABLE_FIELDS:
-                raise ValueError(f"Unsupported filter field: {field!r}")
             if isinstance(value, list):
                 clauses.append({"terms": {field: value}})
             else:
@@ -197,46 +272,98 @@ class AossVectorStore(VectorStore):
         if filter_query is not None:
             knn["vector"]["filter"] = filter_query
 
-        body = {"size": k, "query": {"knn": knn}}
-        response = self.client.search(index=self._settings.index, body=body)
-        return self._hits_to_results(response)
+        body = {"size": k, "query": {"knn": knn}, "_source": _SOURCE_EXCLUDES}
+        return self._hits_to_results(self._search(body))
 
     def search_by_metadata(self, filters: dict, k: int) -> list[SearchResult]:
         filter_query = self._build_filter(filters)
         query = filter_query if filter_query is not None else {"match_all": {}}
-        body = {"size": k, "query": query}
-        response = self.client.search(index=self._settings.index, body=body)
-        return self._hits_to_results(response)
+        body = {
+            "size": k,
+            "query": query,
+            "_source": _SOURCE_EXCLUDES,
+            # Deterministic order: most recently updated sources first.
+            "sort": [
+                {"updated_at": {"order": "desc", "unmapped_type": "date", "missing": "_last"}},
+                {"chunk_index": {"order": "asc", "unmapped_type": "integer"}},
+            ],
+        }
+        return self._hits_to_results(self._search(body))
 
     def get_by_document(self, document_id: str) -> list[dict]:
         body = {
             "size": 1000,
             "query": {"term": {"document_id": document_id}},
             "sort": [{"chunk_index": {"order": "asc"}}],
+            "_source": _SOURCE_EXCLUDES,
         }
-        response = self.client.search(index=self._settings.index, body=body)
+        response = self._search(body)
         return [hit.get("_source", {}) for hit in response.get("hits", {}).get("hits", [])]
+
+    def get_indexed_state(self, document_ids: Sequence[str]) -> dict[str, IndexedState]:
+        if not document_ids:
+            return {}
+        hits = self._scan(
+            {"terms": {"document_id": list(document_ids)}},
+            ["document_id", "content_hash", "updated_at", "extraction_status", "indexed_at"],
+        )
+        newest: dict[str, dict] = {}
+        for hit in hits:
+            doc_id = hit.get("document_id")
+            if not doc_id:
+                continue
+            current = newest.get(doc_id)
+            if current is None or (hit.get("indexed_at") or "") > (current.get("indexed_at") or ""):
+                newest[doc_id] = hit
+        return {
+            doc_id: IndexedState(
+                document_id=doc_id,
+                content_hash=h.get("content_hash"),
+                updated_at=h.get("updated_at"),
+                extraction_status=h.get("extraction_status"),
+            )
+            for doc_id, h in newest.items()
+        }
+
+    def _aggregate(self, filters: dict | None, aggs: dict) -> dict:
+        query = self._build_filter(filters) or {"match_all": {}}
+        body = {"size": 0, "query": query, "aggs": aggs}
+        return self._search(body).get("aggregations", {})
+
+    def list_document_ids(self, filters: dict, limit: int = 10_000) -> set[str] | None:
+        aggs = self._aggregate(filters, {"ids": {"terms": {"field": "document_id", "size": limit}}})
+        return {b["key"] for b in aggs.get("ids", {}).get("buckets", [])}
+
+    def facet(
+        self, field: str, filters: dict | None = None, size: int = 100
+    ) -> list[tuple[str, int]] | None:
+        if field not in FILTERABLE_FIELDS:
+            raise ValueError(f"Unsupported facet field: {field!r}")
+        aggs = self._aggregate(
+            filters,
+            {
+                "values": {
+                    "terms": {"field": field, "size": size},
+                    "aggs": {"docs": {"cardinality": {"field": "document_id"}}},
+                }
+            },
+        )
+        return [
+            (b["key"], int(b.get("docs", {}).get("value") or b.get("doc_count", 0)))
+            for b in aggs.get("values", {}).get("buckets", [])
+        ]
+
+    def max_value(self, field: str, filters: dict | None = None):  # noqa: ANN201
+        if field not in DATE_FIELDS:
+            raise ValueError(f"Unsupported max field: {field!r}")
+        aggs = self._aggregate(filters, {"m": {"max": {"field": field}}})
+        m = aggs.get("m", {})
+        return m.get("value_as_string") or m.get("value")
 
     @staticmethod
     def _hits_to_results(response: dict) -> list[SearchResult]:
-        results: list[SearchResult] = []
-        for hit in response.get("hits", {}).get("hits", []):
-            src = hit.get("_source", {})
-            results.append(
-                SearchResult(
-                    chunk_id=hit.get("_id", ""),
-                    document_id=src.get("document_id", ""),
-                    score=hit.get("_score") or 0.0,
-                    text=src.get("text", ""),
-                    title=src.get("title", ""),
-                    url=src.get("url", ""),
-                    source_type=src.get("source_type"),
-                    kind=src.get("kind"),
-                    repo=src.get("repo"),
-                    summary=src.get("summary", ""),
-                    entities=src.get("entities", []),
-                    topics=src.get("topics", []),
-                    relationships=src.get("relationships", []),
-                )
-            )
-        return results
+        return [
+            source_to_result(hit.get("_source", {}), score=hit.get("_score") or 0.0,
+                             hit_id=hit.get("_id", ""))
+            for hit in response.get("hits", {}).get("hits", [])
+        ]

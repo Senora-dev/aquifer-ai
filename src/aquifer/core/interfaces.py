@@ -15,7 +15,9 @@ from aquifer.core.models import (
     Chunk,
     Document,
     FetchJob,
+    IndexedState,
     QueryContext,
+    Reconciliation,
     SearchResult,
     SemanticMetadata,
     Source,
@@ -38,6 +40,17 @@ class Connector(ABC):
         Returns the normalized documents for this page and a successor ``FetchJob`` to
         continue pagination, or ``None`` when the source is exhausted for this job.
         """
+
+    def fetch_with_reconciliation(
+        self, job: FetchJob
+    ) -> tuple[list[Document], FetchJob | None, Reconciliation | None]:
+        """Like :meth:`fetch`, plus an optional statement of which documents still exist.
+
+        Override to propagate deletions. The default reports nothing, so connectors written
+        against the original interface keep working unchanged.
+        """
+        documents, successor = self.fetch(job)
+        return documents, successor, None
 
 
 class Embedder(ABC):
@@ -86,6 +99,54 @@ class VectorStore(ABC):
         Powers the neutral retrieval tools: relationship traversal and entity listing query the
         flattened semantic fields directly rather than by semantic similarity.
         """
+
+    # --- optional capabilities --------------------------------------------------------
+    # Non-abstract so third-party stores written against the original interface still work.
+    # Built-in stores override all of them.
+
+    def replace_document(self, document_id: str, chunks: Sequence[Chunk]) -> None:
+        """Make ``chunks`` the only indexed chunks of ``document_id``.
+
+        Default: delete then insert (the original behavior). Built-in stores write the new
+        generation first and then remove stale chunks, so a failed write never leaves the
+        document missing.
+        """
+        self.delete_by_document(document_id)
+        self.upsert(chunks)
+
+    def get_indexed_state(self, document_ids: Sequence[str]) -> dict[str, IndexedState]:
+        """Current generation info for each indexed document id (missing ids omitted)."""
+        out: dict[str, IndexedState] = {}
+        for doc_id in document_ids:
+            sources = self.get_by_document(doc_id)
+            if sources:
+                head = sources[0]
+                out[doc_id] = IndexedState(
+                    document_id=doc_id,
+                    content_hash=head.get("content_hash"),
+                    updated_at=head.get("updated_at"),
+                    extraction_status=head.get("extraction_status"),
+                )
+        return out
+
+    def delete_documents(self, document_ids: Sequence[str]) -> None:
+        for doc_id in document_ids:
+            self.delete_by_document(doc_id)
+
+    def list_document_ids(self, filters: dict, limit: int = 10_000) -> set[str] | None:
+        """Distinct document ids matching ``filters``; ``None`` if unsupported."""
+        return None
+
+    def facet(self, field: str, filters: dict | None = None, size: int = 100) -> (
+        list[tuple[str, int]] | None
+    ):
+        """Distinct values of a keyword ``field`` with document counts; ``None`` if unsupported.
+        """
+        return None
+
+    def max_value(self, field: str, filters: dict | None = None):  # noqa: ANN201
+        """Maximum value of a date/numeric ``field``; ``None`` if unsupported or empty."""
+        return None
 
 
 class Inferencer(ABC):

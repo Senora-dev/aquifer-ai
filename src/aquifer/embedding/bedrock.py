@@ -33,8 +33,16 @@ class BedrockEmbedder(Embedder):
         """Lazily construct the ``bedrock-runtime`` client (kept out of import time)."""
         if self._client is None:
             import boto3  # imported lazily so core stays free of AWS deps
+            from botocore.config import Config
 
-            self._client = boto3.client("bedrock-runtime", region_name=self._settings.region)
+            config = Config(
+                retries={"mode": "standard", "max_attempts": self._settings.max_attempts},
+                read_timeout=self._settings.read_timeout_s,
+                connect_timeout=self._settings.connect_timeout_s,
+            )
+            self._client = boto3.client(
+                "bedrock-runtime", region_name=self._settings.region, config=config
+            )
         return self._client
 
     def _embed_one(self, text: str) -> list[float]:

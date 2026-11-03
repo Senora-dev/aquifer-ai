@@ -1,0 +1,26 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: billing-api
+  description: Creates invoices and charges customers
+spec:
+  type: service
+  owner: team-payments
+  system: payments
+  dependsOn:
+    - resource:payments-db
+  consumesApis:
+    - fx-rates-api
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ledger-service
+spec:
+  type: service
+  owner: team-payments
+  system: payments
+  dependsOn:
+    - resource:payments-db
+  providesApis:
+    - ledger-api

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "aquifer": {
+      "command": "${env:AQUIFER_HOME}/.venv/bin/python",
+      "args": [
+        "-m", "aquifer.local", "serve",
+        "--store", "${env:AQUIFER_HOME}/.aquifer-local/index.json",
+        "--repos-root", "${env:AQUIFER_HOME}/examples/demo/repos"
+      ]
+    }
+  }
+}

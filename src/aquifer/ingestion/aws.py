@@ -27,10 +27,15 @@ def get_secret(secret_id: str, *, region: str | None = None, client: Any | None 
     return response["SecretString"]
 
 
-def enqueue_job(queue_url: str, job: FetchJob, *, client: Any | None = None) -> None:
-    """Send a single fetch job onto the ingestion queue."""
+def enqueue_job(
+    queue_url: str, job: FetchJob, *, delay_seconds: int = 0, client: Any | None = None
+) -> None:
+    """Send a single fetch job onto the ingestion queue (optionally delayed, max 900s)."""
     client = client or _client("sqs")
-    client.send_message(QueueUrl=queue_url, MessageBody=job.model_dump_json())
+    kwargs = {"QueueUrl": queue_url, "MessageBody": job.model_dump_json()}
+    if delay_seconds > 0:
+        kwargs["DelaySeconds"] = min(900, int(delay_seconds))
+    client.send_message(**kwargs)
 
 
 def read_watermark(
@@ -40,8 +45,13 @@ def read_watermark(
     client = client or _client("s3")
     try:
         obj = client.get_object(Bucket=bucket, Key=key)
-    except Exception:
-        return None
+    except Exception as exc:
+        # Only "the object does not exist" means "never ran". Anything else (throttling,
+        # AccessDenied, network) must fail the run rather than silently trigger a full backfill.
+        code = (getattr(exc, "response", None) or {}).get("Error", {}).get("Code")
+        if code in {"NoSuchKey", "404", "NotFound"}:
+            return None
+        raise
     payload = json.loads(obj["Body"].read())
     value = payload.get("since")
     return datetime.fromisoformat(value) if value else None

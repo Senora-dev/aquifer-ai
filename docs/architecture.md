@@ -1,9 +1,10 @@
 # Architecture
 
-Aquifer.ai is an **in-VPC Context Lake**: infrastructure that aggregates engineering context
-into a vector store and serves it to AI agents over a standard MCP API. It is deployed as a
-**single AWS CDK (Python) stack** and runs entirely inside your own VPC against your own Amazon
-Bedrock. It is not a SaaS — there is no external control plane and no data leaves your account.
+Aquifer is a **self-hosted engineering context layer**: infrastructure that aggregates
+engineering context into a vector store and serves it, with evidence, to AI agents over MCP. It
+is deployed as a **single AWS CDK (Python) stack** in your own account and VPC against your own
+Amazon Bedrock. There is no external control plane. Outbound traffic is limited to HTTPS: to
+GitHub for source content and to AWS services (see [security.md](./security.md#data-residency)).
 
 This document describes the deployed architecture and the rationale behind it. It is written for
 platform engineers and architects evaluating or operating Aquifer.
@@ -32,16 +33,17 @@ flowchart LR
         SM[(Secrets Manager<br/>source tokens)] --- WL
     end
     GH[GitHub / Source APIs] -->|via NAT| WL
-    AG[AI Agents] -->|MCP over HTTP/SSE| NLB
+    AG[AI Agents] -->|MCP streamable HTTP + bearer token| NLB
 
     classDef ext fill:#eee,stroke:#999;
     class GH,AG ext;
 ```
 
 Every component is provisioned by one stack and lives in private subnets. Bedrock, OpenSearch,
-SQS, Secrets Manager, and S3 are reached over VPC/PrivateLink endpoints; only outbound source
-fetches (e.g. GitHub) traverse a NAT gateway. The MCP load balancer is **internal** — agents
-must run inside the VPC or a peered network.
+SQS, Secrets Manager, and S3 are reached over VPC/PrivateLink endpoints; GitHub fetches, ECR
+image pulls and CloudWatch Logs traverse a single NAT gateway (HTTPS only). The MCP load balancer
+is **internal** and every request needs a bearer token — agents run inside the VPC or on a
+private network listed in `mcp_allowed_cidrs` (VPN, peering).
 
 ## Stack composition
 
@@ -49,10 +51,12 @@ The stack (`infrastructure/aquifer_stack.py`) composes four constructs:
 
 | Construct (`infrastructure/components/`) | Responsibility | Key AWS resources |
 | --- | --- | --- |
-| `network.py` | Private networking and egress control | VPC, NAT, interface endpoints (Bedrock, Secrets Manager, SQS), S3 gateway endpoint |
-| `vector_store.py` | Neutral knowledge store | OpenSearch Serverless collection + VPC endpoint + encryption/network/data-access policies |
-| `ingestion.py` | Pull + index pipeline | Discovery & Worker Lambdas, EventBridge rule, SQS (+DLQ), S3 (watermarks), Secrets Manager |
-| `mcp_service.py` | Retrieval API | Fargate service + task role, internal Network Load Balancer |
+| `network.py` | Private networking and egress control | VPC, NAT, interface endpoints (Bedrock, Secrets Manager, SQS), S3 gateway endpoint, per-role security groups (HTTPS-only egress) |
+| `vector_store.py` | Neutral knowledge store | OpenSearch Serverless collection + VPC endpoint + encryption/network policies + least-privilege data-access policy (ingestion read/write, MCP read-only) |
+| `ingestion.py` | Pull + index pipeline | Discovery & Worker Lambdas, EventBridge rule, SQS (+DLQ, alarm), S3 (watermarks), Secrets Manager (GitHub token) |
+| `mcp_service.py` | Retrieval API | Fargate service (non-root, read-only FS), bearer-token secret, internal Network Load Balancer (optional TLS) |
+
+Deploy-time configuration is validated by `infrastructure/stack_config.py` before synthesis.
 
 ## The pipeline
 
@@ -78,20 +82,34 @@ sequenceDiagram
     WL->>Q: enqueue successor page (if any)
 ```
 
-1. **Source → Document.** A `Connector` (e.g. GitHub) fetches issues, PRs, and READMEs one
-   bounded page at a time and normalizes them into a source-agnostic `Document`. Pagination is
-   fanned out through SQS so a full backfill is simply many short Lambda invocations — no job
-   ever approaches the Lambda timeout.
-2. **Semantic Indexing (Bedrock).** In the `before_ingest` hook, the semantic indexer calls a
-   Claude model on your Bedrock to extract **neutral, objective** metadata — typed entities
-   (`service:billing-api`, `jira_key:PROJ-400`), factual relationships (`depends_on`,
-   `references`, `part_of`), and topics. See [concepts.md](./concepts.md).
-3. **Embedding + storage.** Chunks are embedded with Amazon Titan and upserted into OpenSearch
-   Serverless. The extracted metadata is denormalized onto every chunk and indexed as queryable
-   fields (structured objects plus flattened keyword arrays for efficient filtering).
-4. **MCP API.** A persistent Fargate service exposes the lake over the Model Context Protocol.
-   Agents call neutral retrieval tools — `search_context`, `get_document`, `list_sources`,
-   `find_related`, `list_entities` — to gather exactly the context they need.
+1. **Source → Document.** A `Connector` (e.g. GitHub) fetches READMEs, issues, PRs (newest
+   first, incremental by watermark) and repository files (from one pinned commit of the default
+   branch) one bounded page at a time, normalizing them into a source-agnostic `Document` with
+   provenance (path, revision, timestamps, state). Pagination is fanned out through SQS so a full
+   backfill is many short Lambda invocations. Unchanged files are skipped by git blob SHA before
+   download.
+2. **Skip unchanged.** The pipeline compares each document's content hash with the indexed
+   generation and skips unchanged documents — no Bedrock calls on redelivery or overlap.
+3. **Semantic Indexing.** In the `before_ingest` hook, deterministic parsers extract explicit
+   references from Terraform, docker-compose and Backstage files; a Claude model on your Bedrock
+   extracts relationships from prose, each checked against the text. See
+   [concepts.md](./concepts.md#evidence-and-provenance).
+4. **Chunk, embed, replace.** Chunks are exact source slices with line ranges, embedded with
+   Amazon Titan. A new generation is written, then older generations are deleted (search +
+   bulk delete by id — OpenSearch Serverless supports neither `_delete_by_query` nor custom ids
+   on Classic vector collections), so a document is never missing mid-update.
+5. **Reconcile.** Connectors report which documents still exist in a scope (a git tree, a README
+   404); indexed documents that no longer exist are deleted. Discovery purges repositories
+   removed from the allowlist.
+6. **MCP API.** A Fargate service exposes the lake over the Model Context Protocol. Every tool
+   call is authenticated, authorized through the interceptor seam, scoped to the configured
+   repositories, and audit-logged.
+
+**Failure handling.** Transient errors (throttling, timeouts, 5xx) are retried with bounded
+backoff and then fail the page so SQS redelivers it; a permanently failing job lands in the DLQ
+(alarmed). A permanent failure on one document is logged and counted while the rest of the page
+and its successor pages continue. GitHub rate limits re-enqueue the job with an SQS delay
+instead of consuming receives.
 
 ## Design rationale
 
@@ -105,10 +123,11 @@ embedding provider is a localized change — see [contributing.md](./contributin
 verdicts. This keeps Aquifer a trustworthy source of truth and leaves reasoning where it
 belongs — in the agent. Neutrality is a hard architectural constraint, not a default.
 
-**Security and sovereignty.** All processing — including model inference — happens inside your
-VPC against your own Bedrock. There is no external API, no telemetry, and no vendor lock-in. The
-MCP endpoint is internal-only; source credentials live in Secrets Manager; the OpenSearch
-collection is reachable solely through its VPC endpoint.
+**Security and sovereignty.** Model inference runs on your own Bedrock in the stack's region,
+reached through a VPC endpoint. There is no Aquifer-operated API, no telemetry, and no license
+server. The MCP endpoint is internal-only and requires a bearer token; source and MCP credentials
+live in Secrets Manager; the OpenSearch collection is reachable solely through its VPC endpoint.
+The full model and its limits: [security.md](./security.md).
 
 **Right-sized compute.** Ingestion is bursty and IO-bound, so it runs on Lambda (serverless,
 SQS-fanned). The MCP API holds long-lived agent connections, so it runs on Fargate. One stack,
@@ -116,11 +135,11 @@ two compute models, each matched to its workload.
 
 ## The extension seam
 
-Cross-cutting enterprise concerns (SSO, RBAC, audit) are intentionally **absent** from the
-open-source core. The core exposes an `Interceptor` seam (`before/after_ingest`,
-`before/after_query`, `authorize`) with pass-through defaults. Enterprise capabilities ship as a
-separate package that registers interceptors via configuration — the core never imports
-enterprise code.
+The core ships authentication (bearer tokens), a repository-scope guard and audit events. It also
+exposes an `Interceptor` seam (`before/after_ingest`, `before/after_query`, `authorize`) that
+receives the authenticated principal. Per-principal authorization, SSO-derived identities,
+redaction or an external policy engine plug in there via configuration — the core never imports
+the code that implements them.
 
 ---
 

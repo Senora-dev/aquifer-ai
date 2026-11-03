@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      # The CDK synth tests run jsii, which needs Node.js.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,cdk]"
+      - name: Lint
+        run: ruff check src tests scripts infrastructure
+      - name: Unit, integration and CDK synth tests (no AWS credentials)
+        run: pytest -q
+      - name: Retrieval benchmark (offline, deterministic)
+        run: python scripts/benchmark_retrieval.py --out benchmark-report.json
+      - uses: actions/upload-artifact@v4
+        if: matrix.python == '3.12'
+        with:
+          name: benchmark-report
+          path: benchmark-report.json
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Audit runtime dependencies
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip install ".[aws,github,mcp]"
+          pip-audit --skip-editable
+
+  image:
+    name: MCP image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (no push)
+        run: docker build -f Dockerfile.mcp -t aquifer-mcp:ci .
+      - name: Refuses to start without auth tokens
+        run: |
+          if docker run --rm --read-only aquifer-mcp:ci; then
+            echo "server started without tokens" && exit 1
+          fi
