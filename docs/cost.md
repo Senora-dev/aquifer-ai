@@ -110,7 +110,8 @@ Cheaper variants:
 - t4g.micro (1 GiB) gives ≈ $12.80 a month, for up to ~5,000 chunks.
 - A 1-year Savings Plan on t4g.small gives ≈ $16.
 
-Upgrading to t4g.medium (4 GiB, for up to ~100,000 chunks) gives ≈ $33.
+Upgrading to t4g.medium (4 GiB, ≈ $33 a month) leaves room for ~100,000 chunks. That figure is
+extrapolated from the measured memory use (~18 MiB per 1,000 chunks) and was not tested.
 
 ### Usage-based costs (outside the baseline)
 
@@ -118,7 +119,7 @@ Upgrading to t4g.medium (4 GiB, for up to ~100,000 chunks) gives ≈ $33.
 | --- | --- | --- | --- |
 | Embeddings (Titan Text Embeddings v2) | each new or changed chunk, once; each query, once | $0.026 / million tokens | First ingest: ~15M tokens ≈ $0.40. Steady state: < $0.50 / month |
 | LLM extraction, Claude Sonnet 4.6 (EU inference profile) | one call per new or changed README, issue, PR or ADR: ~2,000 input + ~400 output tokens | $3.30 / M input, $16.50 / M output | ≈ $0.013 per document. First 4,000 documents ≈ $53. 50 changes a day ≈ $20 / month; 200 a day ≈ $80 / month |
-| LLM extraction, Claude Haiku 4.5 (EU) | same | $1.10 / M input, $5.50 / M output | ≈ $0.0044 per document: one third of Sonnet |
+| LLM extraction, Claude Haiku 4.5 (EU), **the default chosen by `./aquifer-aws configure`** | same | $1.10 / M input, $5.50 / M output | ≈ $0.0044 per document: one third of Sonnet. First 4,000 documents ≈ $18; 50 changes a day ≈ $6.60 / month; 200 a day ≈ $26 / month |
 | LLM extraction disabled | — | — | $0. Deterministic Terraform, compose and Backstage extraction and search still work |
 | Burst CPU | not possible with `standard` credits; the instance slows down instead | — | $0 |
 | GitHub API | within the free REST rate limit (5,000 requests/hour per token) | free | $0 |
@@ -132,17 +133,50 @@ of *changes*, not the size of the corpus. Configuration files never call the LLM
 | --- | --- | --- |
 | Availability | One instance in one AZ. EC2 automatic recovery restarts it on host failure (minutes). No redundancy during an AZ outage | Multi-AZ OpenSearch, Fargate behind an NLB |
 | Recovery | RPO ≤ 24 h from snapshots, or rebuild from sources. RTO: minutes (reboot) to ~30 min (restore a snapshot) | Managed by OpenSearch |
-| Scale | ~25,000 chunks on t4g.small, ~100,000 on t4g.medium; vectors are held in memory | Millions of chunks |
-| Query latency | In-process scan: a few ms per 10,000 chunks, plus a ~150 ms Bedrock query embedding | Network round trips to OpenSearch plus the same embedding |
-| Ingestion throughput | 2 worker threads; CPU-burstable. A first sync of 5,000 documents takes roughly an hour, dominated by Bedrock latency | Many Lambda workers in parallel |
+| Scale | Measured on t4g.small: 25,000 chunks comfortably, 50,000 workable; vectors are held in memory | Millions of chunks |
+| Query latency | Measured on t4g.small at baseline CPU: 4 ms search at 5,000 chunks, 22 ms at 25,000, ~160 ms at 50,000; plus ~150 ms for the Bedrock query embedding | Network round trips to OpenSearch plus the same embedding |
+| Ingestion throughput | 2 worker threads. Bound by Bedrock latency, not CPU; a new instance starts with no CPU credits, so the first large sync runs at baseline CPU | Many Lambda workers in parallel |
+| Cost ceiling | `standard` CPU credits: the instance slows down rather than bill surplus credits, so the bill cannot exceed the on-demand price | Scales (and bills) with load |
 | Network exposure | No inbound ports by default (SSM tunnel); optional public HTTPS with bearer tokens | Internal NLB inside a private VPC |
 | Operations | One machine: OS updates (`dnf upgrade` through SSM) | Managed services, more resources |
 
-Choose the scale profile when you need multi-AZ availability, more than ~100,000 chunks, or
+Choose the scale profile when you need multi-AZ availability, well over ~50,000 chunks, or
 private-only networking with VPC endpoints.
 
 ## Measured usage
 
-*To be filled in from a deployed small profile (see the deployment PR): instance memory and CPU
-at idle and during ingestion, query latency, log volume, and the AWS bill once Cost Explorer
-reports it.*
+The small profile was deployed to eu-west-1 on 2026-11-04 (23 resources) and then destroyed.
+It ingested three private GitHub repositories of synthetic test data, with LLM extraction by
+Claude Haiku 4.5.
+
+**Billing.** Cost Explorer had not yet reported charges for the test window when the
+environment was destroyed; it typically lags by up to 24 hours. The baseline above is therefore
+*calculated* from list prices for the resources Terraform created. These are fixed hourly or
+per-GB charges with no hidden components:
+- the instance, volumes and IPv4 address are billed per hour
+- snapshots and logs are billed per GB stored
+
+**Resource use, *measured* on t4g.small:**
+
+| What | Result |
+| --- | --- |
+| Memory at idle (whole instance / Aquifer process), 17 documents indexed | 338 MiB of 1,840 MiB / 105 MiB |
+| CPU at idle | < 1% (load 0.1) |
+| Synthetic index, 5,000 chunks × 1,024 dims (~3 KB text each) | peak 169 MiB; 44 MiB on disk; search p50 4.1 ms, p95 4.3 ms; repo-filtered 7 ms; cold load 0.3 s |
+| Synthetic index, 25,000 chunks | peak 478 MiB; 203 MiB on disk; search p50 21.6 ms, p95 22.3 ms; repo-filtered 33 ms; `find_related` filter 37 ms; cold load 1.5 s |
+| Synthetic index, 50,000 chunks | peak 896 MiB; 401 MiB on disk; search p50 159 ms; filtered 167–225 ms; cold load 8.7 s |
+| CPU credit balance during these runs | 0, so the instance ran at its 20% baseline; the latencies above are worst case |
+| MCP tool latency from a laptop through the SSM tunnel (25 e2e calls) | p50 101 ms, max 301 ms |
+| Logs | ~5.9 KB per incremental sync of 3 repositories, i.e. ~17 MB/month at a 15-minute interval |
+| Data volume after ingestion | 2.8 MB used of 10 GiB |
+
+**Functional checks on the deployed server:**
+- 25/25 end-to-end MCP checks, including LLM relationship status
+- 23/23 update and deletion checks with real GitHub commits
+- a full re-sync re-indexed 0 documents
+- the index survived an instance replacement and a reboot
+
+**Model cost evidence.** With `--bedrock`, the retrieval benchmark (20 documents, 11 LLM calls)
+used ~1,400 embedding tokens and ~660 tokens of document text per run. The fixed extraction
+prompt adds ~1,400 tokens per call. That is the basis for the ~2,000-input-token per-document
+estimate above.

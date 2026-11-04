@@ -2,11 +2,22 @@
 
 Aquifer is a **self-hosted engineering context layer**: infrastructure that aggregates
 engineering context into a vector store and serves it, with evidence, to AI agents over MCP. It
-is deployed as a **single AWS CDK (Python) stack** in your own account and VPC against your own
-Amazon Bedrock. There is no external control plane. Outbound traffic is limited to HTTPS: to
+runs in your own account against your own Amazon Bedrock, in one of two shapes that share all
+application code:
+
+- **Small profile (default):** one process (`aquifer serve`) on one server runs the MCP server,
+  a scheduler, a durable SQLite job queue and the ingestion workers, with a SQLite index on
+  local disk (`src/aquifer/node/`, `src/aquifer/vectorstore/sqlite.py`). On AWS it is one EC2
+  instance managed by Terraform (`deploy/aws`); elsewhere it is one container
+  (`Dockerfile.server`). Baseline ≈ $20/month; see [cost.md](./cost.md).
+- **Scale profile:** the **AWS CDK (Python) stack** described in the rest of this document, with
+  ingestion on Lambda and SQS, the index on OpenSearch Serverless, and MCP on Fargate.
+
+Discovery, the worker, the pipeline, the extractors and the MCP tools are the same in both;
+only the queue, state store and index differ (`src/aquifer/ingestion/runtime.py`). There is no external control plane. Outbound traffic is limited to HTTPS: to
 GitHub for source content and to AWS services (see [security.md](./security.md#data-residency)).
 
-This document describes the deployed architecture and the rationale behind it. It is written for
+This document describes the scale profile in detail and the rationale behind it. It is written for
 platform engineers and architects evaluating or operating Aquifer.
 
 ## High-level architecture

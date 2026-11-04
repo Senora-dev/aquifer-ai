@@ -8,7 +8,10 @@ provider and the prompts are swappable.
 
 from __future__ import annotations
 
+import logging
+
 from aquifer.core.config import SemanticIndexSettings, get_settings
+from aquifer.core.errors import log_event
 from aquifer.core.interfaces import Inferencer, SemanticIndexer
 from aquifer.core.models import (
     Document,
@@ -27,6 +30,9 @@ from aquifer.semantic.prompts import (
 _LLM = RelationshipOrigin.LLM_EXTRACTED.value
 
 
+logger = logging.getLogger(__name__)
+
+
 class LlmSemanticIndexer(SemanticIndexer):
     def __init__(
         self,
@@ -42,7 +48,10 @@ class LlmSemanticIndexer(SemanticIndexer):
         template = self.registry.select(document.source_type, document.kind)
         user = template.render_user(document, self.settings.max_input_chars)
         data = self.inferencer.infer_json(template.system, user, schema=SEMANTIC_SCHEMA)
-        out = LlmSemanticOutput.model_validate(data)
+        out = LlmSemanticOutput.parse(data)
+        if out.dropped:
+            log_event(logger, "llm_output_items_dropped", document_id=document.id,
+                      dropped=out.dropped)
         # Everything from the model is labelled llm_extracted, whatever it claimed.
         return SemanticMetadata(
             summary=out.summary,

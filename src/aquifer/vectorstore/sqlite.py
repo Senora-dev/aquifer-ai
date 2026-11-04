@@ -8,14 +8,15 @@ tools, the benchmark and the tests behave identically on all three stores.
 - **Durable.** Every write is one SQLite transaction (WAL journal), so a crash or power loss
   leaves either the old or the new generation of a document, never a partial one.
 - **Fast enough for a small deployment.** Normalized vectors are held in one float32 matrix;
-  a query is one matrix-vector product (a few milliseconds per 10,000 chunks). Records are
-  kept in memory without their vectors.
+  a query is one matrix-vector product plus a top-k selection (measured on a t4g.small at
+  baseline CPU: 4 ms at 5,000 chunks, 22 ms at 25,000). Records are kept in memory without
+  their vectors.
 - **Thread-safe.** The MCP server and ingestion workers share one instance in one process.
 - **Multi-process aware.** If another process (e.g. ``aquifer`` CLI maintenance) writes to the
   same file, the next read notices (``PRAGMA data_version``) and reloads.
 
-Sizing: memory is roughly ``chunks × (4 × dimensions + ~6 KB)``; about 250 MB for 25,000
-chunks of 1024 dimensions. Use the OpenSearch scale profile well beyond ~100,000 chunks.
+Sizing (measured, 1024 dimensions, ~3 KB of text per chunk): ~480 MiB peak for 25,000
+chunks, ~900 MiB for 50,000. Use the OpenSearch scale profile well beyond that.
 """
 
 from __future__ import annotations
@@ -74,6 +75,7 @@ class SqliteVectorStore(InMemoryVectorStore):
         self._mat = np.zeros((0, 0), dtype=np.float32)
         self._alive = np.zeros(0, dtype=bool)
         self._row: dict[str, int] = {}
+        self._rids: list[str | None] = []  # row -> record id
         self._free: list[int] = []
         self._used = 0
 
@@ -96,15 +98,18 @@ class SqliteVectorStore(InMemoryVectorStore):
                 self._mat = np.vstack([self._mat, np.zeros((grow, self._dim), np.float32)])
                 self._alive = np.concatenate([self._alive, np.zeros(grow, bool)])
             row = self._used
+            self._rids.append(None)
             self._used += 1
         self._mat[row] = unit
         self._alive[row] = True
         self._row[rid] = row
+        self._rids[row] = rid
 
     def _drop_vector(self, rid: str) -> None:
         row = self._row.pop(rid, None)
         if row is not None:
             self._alive[row] = False
+            self._rids[row] = None
             self._mat[row] = 0.0
             self._free.append(row)
 
@@ -232,23 +237,44 @@ class SqliteVectorStore(InMemoryVectorStore):
     def query(
         self, vector: Sequence[float], k: int, filters: dict | None = None
     ) -> list[SearchResult]:
+        if k <= 0:
+            return []
         q = np.asarray(vector, dtype=np.float32)
         norm = float(np.linalg.norm(q))
+        usable = bool(norm) and self._dim == q.size
         with self._lock:
-            matching = self._matching(filters)
-            if not matching or k <= 0:
-                return []
-            rows = np.array([self._row.get(rid, -1) for rid, _ in matching])
-            scores = np.zeros(len(matching), dtype=np.float32)
-            has = rows >= 0
-            if norm and has.any() and self._dim == q.size:
-                scores[has] = self._mat[rows[has]] @ (q / norm)
+            if filters:
+                matching = self._matching(filters)
+                rids = [rid for rid, _ in matching]
+                rows = np.array([self._row.get(rid, -1) for rid in rids], dtype=np.int64)
+                scores = np.zeros(len(rids), dtype=np.float32)
+                has = rows >= 0
+                if usable and has.any():
+                    scores[has] = self._mat[rows[has]] @ (q / norm)
+            else:
+                self._refresh()
+                live = np.flatnonzero(self._alive[: self._used])
+                scores = (self._mat[live] @ (q / norm) if usable
+                          else np.zeros(len(live), np.float32))
+                vectorless = ([rid for rid in self._records if rid not in self._row]
+                              if len(self._records) > len(self._row) else [])
+            if not filters:
+                # Keep only candidates that can reach the top k (ties included), then rank them
+                # exactly like the reference store: score (6 decimals), then chunk id.
+                if len(scores) > k:
+                    kth = np.partition(scores, len(scores) - k)[len(scores) - k]
+                    keep = np.flatnonzero(scores >= kth - 2e-6)
+                else:
+                    keep = np.arange(len(scores))
+                cand = [(float(scores[j]), self._rids[live[j]]) for j in keep]
+                cand += [(0.0, rid) for rid in vectorless]
+            else:
+                cand = list(zip(scores.tolist(), rids, strict=True))
             ranked = sorted(
-                zip(scores.tolist(), matching, strict=True),
-                key=lambda t: (-round(t[0], 6), t[1][1].get("chunk_id") or t[1][0]),
-            )[:k]
-            return [source_to_result(self._public(r), score=round(s, 6), hit_id=rid)
-                    for s, (rid, r) in ranked]
+                cand, key=lambda t: (-round(t[0], 6),
+                                     self._records[t[1]].get("chunk_id") or t[1]))[:k]
+            return [source_to_result(self._public(self._records[rid]), score=round(s, 6),
+                                     hit_id=rid) for s, rid in ranked]
 
     def get_document_vectors(self, document_id: str) -> dict[str, list[float]]:
         with self._lock:

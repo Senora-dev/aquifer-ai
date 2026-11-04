@@ -75,3 +75,22 @@ def test_extract_selects_prompt_by_source_and_kind():
         _doc(kind=DocumentKind.ISSUE, source=SourceType.JIRA)
     )
     assert "Jira work item" in fake_jira.calls[0]["user"]
+
+
+def test_malformed_items_are_dropped_not_the_whole_document():
+    """Seen with Claude Haiku 4.5: a relationship with "target": null. The other items of the
+    document must survive (the document used to fail extraction entirely)."""
+    indexer = _indexer({
+        "summary": "s",
+        "entities": [{"type": "service", "name": "billing-api"}, {"type": "service"}],
+        "topics": ["billing", None],
+        "relationships": [
+            {"type": "depends_on", "target": None},
+            {"type": "depends_on", "target": "payments-db", "assertion": "present"},
+            {"type": "depends_on", "target": "   "},
+        ],
+    })
+    meta = indexer.extract(_doc())
+    assert [e.name for e in meta.entities] == ["billing-api"]
+    assert meta.topics == ["billing"]
+    assert [r.target for r in meta.relationships] == ["payments-db"]

@@ -4,6 +4,29 @@
 set -euo pipefail
 exec > >(tee -a /var/log/aquifer-bootstrap.log) 2>&1
 
+# cloud-init runs user data only on the first boot. Register this script to run again at boot
+# until it has completed once, so an interrupted first boot (stop, reboot) finishes later.
+install -d -m 755 /opt/aquifer/bin
+if [ "$(readlink -f "$0")" != /opt/aquifer/bin/aquifer-bootstrap ]; then
+  install -m 700 "$0" /opt/aquifer/bin/aquifer-bootstrap
+fi
+cat > /etc/systemd/system/aquifer-bootstrap.service <<'UNIT'
+[Unit]
+Description=Finish Aquifer first-boot setup
+After=network-online.target cloud-final.service
+Wants=network-online.target
+ConditionPathExists=!/opt/aquifer/.bootstrapped
+
+[Service]
+Type=oneshot
+ExecStart=/opt/aquifer/bin/aquifer-bootstrap
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl enable aquifer-bootstrap.service >/dev/null 2>&1 || true
+
 REGION="${region}"
 BUCKET="${bucket}"
 SSM_PREFIX="${ssm_prefix}"
@@ -21,6 +44,9 @@ mkdir -p /var/lib/aquifer
 grep -q 'LABEL=aquifer-data' /etc/fstab || \
   echo 'LABEL=aquifer-data /var/lib/aquifer ext4 defaults,nofail,noatime 0 2' >> /etc/fstab
 mountpoint -q /var/lib/aquifer || mount /var/lib/aquifer
+
+# --- wait for internet access (the elastic IP is attached shortly after launch) ---------------
+for _ in $(seq 1 60); do curl -fsS -o /dev/null --max-time 5 https://aws.amazon.com && break; sleep 5; done
 
 # --- packages and user ------------------------------------------------------------------------
 dnf install -y -q python3.12 python3.12-pip amazon-cloudwatch-agent
@@ -162,4 +188,5 @@ UNIT
 fi
 
 /opt/aquifer/bin/aquifer-update
+touch /opt/aquifer/.bootstrapped
 echo "bootstrap complete"

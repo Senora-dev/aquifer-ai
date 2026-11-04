@@ -62,13 +62,17 @@ credentials and costs money).
 
 ## AWS deployment
 
-See [deployment.md](./deployment.md). In short:
+The default is one small server (~$20/month in eu-west-1, plus model usage):
 
 ```bash
-pip install -e ".[dev,cdk]" && npm install -g aws-cdk
-python scripts/preflight.py --region <region> --repos your-org/your-repo
-cd infrastructure && cdk bootstrap && cdk deploy -c repos='["your-org/your-repo"]'
+cd deploy/aws
+./aquifer-aws check
+AQUIFER_REPOS='["your-org/your-repo"]' ./aquifer-aws configure
+./aquifer-aws plan && ./aquifer-aws up && ./aquifer-aws connect
 ```
+
+See [deploy/aws/README.md](../deploy/aws/README.md). To run on infrastructure you already have
+(Docker) or on the OpenSearch scale profile, see [deployment.md](./deployment.md).
 
 ---
 

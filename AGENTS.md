@@ -5,8 +5,9 @@ This file tells an AI agent how to work on, test and evaluate Aquifer. Humans: s
 ## What this repository is
 
 Aquifer is a self-hosted engineering-context layer served over MCP. Python package in
-`src/aquifer/`, production AWS CDK stack in `infrastructure/`, Terraform evaluation environment
-in `deploy/terraform/`. It returns neutral facts with provenance — never add scores, risk
+`src/aquifer/`. Default AWS deployment (one server, Terraform) in `deploy/aws/`, container for
+existing infrastructure in `Dockerfile.server` + `deploy/docker/`, scale profile (CDK,
+OpenSearch Serverless) in `infrastructure/`. It returns neutral facts with provenance — never add scores, risk
 assessments or recommendations to responses.
 
 ## Setup (no AWS needed)
@@ -28,19 +29,21 @@ Run these before declaring work done; all run offline without credentials:
 Try the product locally: `python -m aquifer.local ingest examples/demo/repos`, then
 `python -m aquifer.local serve --repos-root examples/demo/repos` (MCP over stdio).
 
-## Evaluate on AWS (only when the user asks)
+## Deploy or evaluate on AWS (only when the user asks)
 
-Use the single entrypoint `deploy/terraform/aquifer-test`; each step prints `==>` headings,
-`✓`/`✗` results and machine-readable `KEY=value` lines.
+Use the single entrypoint `deploy/aws/aquifer-aws` (see deploy/aws/README.md); each step prints
+`==>` headings, `✓`/`✗` results and machine-readable `KEY=value` lines.
 
-1. `./aquifer-test check` — if it reports expired AWS credentials, ask the user to run
+1. `./aquifer-aws check`: if it reports expired AWS credentials, ask the user to run
    `aws sso login` (you cannot do it for them).
-2. `./aquifer-test seed && ./aquifer-test configure && ./aquifer-test plan` — **show the user the
-   resource list and the cost (~$10/day) and get explicit approval before `up`.**
-3. `./aquifer-test up`, then `./aquifer-test test` (and `test-updates`).
-4. Never run `./aquifer-test down` or `terraform destroy` unless the user asks.
+2. `./aquifer-aws configure` (`AQUIFER_REPOS='["org/repo"]'`, or `./aquifer-aws seed` first for
+   synthetic test repositories), then `./aquifer-aws plan`. **Show the user the resource list
+   and the cost (~$20/month, about $0.03/hour) and get explicit approval before `up`.**
+3. `./aquifer-aws up`, then `./aquifer-aws test` (and `test-updates`; both need the seeded
+   repositories).
+4. Never run `./aquifer-aws down` or `terraform destroy` unless the user asks.
 
-Failure triage: `./aquifer-test status`, `./aquifer-test logs worker 30`, the DLQ count.
+Failure triage: `./aquifer-aws status` (dead letters, last sync error), `./aquifer-aws logs 30`.
 
 ## Rules
 

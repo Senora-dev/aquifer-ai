@@ -67,28 +67,29 @@ cases and the seven `relationship_status` cases) and are reported as **skipped**
 
 Baseline = `main` at `483d2d6` before Engineering Context v1. Offline = deterministic CI mode.
 Bedrock = `--bedrock` with Titan Embed Text v2 and Claude Sonnet 4.6 (EU inference profile),
-run against the same corpus; the run was **valid** (all 20 documents extracted, no extraction
-errors).
+in-memory store. The last column is the same run with Claude Haiku 4.5, the default extraction
+model of the small deployment profile, on the SQLite store it uses (`--store sqlite`). Both
+Bedrock runs were **valid**: all 20 documents extracted, no extraction errors.
 
-| Metric | Baseline | Offline | Bedrock |
-| --- | --- | --- | --- |
-| Cases passed / failed / skipped | not runnable¹ | **43 / 0 / 9** | **52 / 0 / 0** |
-| recall@5 | not measurable¹ | 1.00 | 0.92 |
-| recall@10 | not measurable¹ | 1.00 | 1.00 |
-| precision@5 | not measurable¹ | 0.33 | 0.30 |
-| MRR | not measurable¹ | 1.00 | 0.79 |
-| edge recall | 0 — no deterministic extraction; files not ingested² | 1.00 | 1.00 |
-| edge precision (exhaustive cases) | n/a | 1.00 | 0.78³ |
-| provenance coverage | 0 — responses had no path / revision / line fields² | 1.00 | 0.89³ |
-| freshness metadata coverage | 0 — no `indexed_at`; `get_document` had no timestamps² | 1.00 | 1.00 |
-| unsupported relationship rate | not measurable (no origin/grounding) | 0.00 | 0.06³ |
-| extraction precision / recall (9 structured files) | 0 / 0 (capability absent)² | 1.00 / 1.00 | 1.00 / 1.00 |
-| LLM extraction harness (`tests/eval_data`, 8 examples) | — | not run | entity recall 0.96, relationship recall 0.82 |
-| ingestion embedding tokens (20 docs) | — | ~1,400 | ~1,400 |
-| ingestion LLM calls / input tokens | — | 0 | 11 / ~660 |
-| query embedding tokens | — | ~7 per query | ~7 per query |
-| `search_context` latency p50 / p95 | — | 1.0 / 1.2 ms (in-memory) | 157 / 221 ms (Bedrock embedding call) |
-| `find_related` latency p50 / p95 | — | 0.2 / 0.4 ms (in-memory) | 0.7 / 3.8 ms (in-memory store) |
+| Metric | Baseline | Offline | Bedrock, Sonnet 4.6 | Bedrock, Haiku 4.5, SQLite store |
+| --- | --- | --- | --- | --- |
+| Cases passed / failed / skipped | not runnable¹ | **43 / 0 / 9** | **52 / 0 / 0** | **52 / 0 / 0** |
+| recall@5 | not measurable¹ | 1.00 | 0.92 | 0.92 |
+| recall@10 | not measurable¹ | 1.00 | 1.00 | 1.00 |
+| precision@5 | not measurable¹ | 0.33 | 0.30 | 0.30 |
+| MRR | not measurable¹ | 1.00 | 0.79 | 0.79 |
+| edge recall | 0 — no deterministic extraction; files not ingested² | 1.00 | 1.00 | 1.00 |
+| edge precision (exhaustive cases) | n/a | 1.00 | 0.78³ | 0.76³ |
+| provenance coverage | 0 — responses had no path / revision / line fields² | 1.00 | 0.89³ | 0.93³ |
+| freshness metadata coverage | 0 — no `indexed_at`; `get_document` had no timestamps² | 1.00 | 1.00 | 1.00 |
+| unsupported relationship rate | not measurable (no origin/grounding) | 0.00 | 0.06³ | 0.04³ |
+| extraction precision / recall (9 structured files) | 0 / 0 (capability absent)² | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 |
+| LLM extraction harness (`tests/eval_data`, 8 examples) | — | not run | entity recall 0.96, relationship recall 0.82 | entity recall 1.00, relationship recall 0.86 |
+| ingestion embedding tokens (20 docs) | — | ~1,400 | ~1,400 | ~1,400 |
+| ingestion LLM calls / input tokens | — | 0 | 11 / ~660 | 11 / ~660 |
+| query embedding tokens | — | ~7 per query | ~7 per query | ~7 per query |
+| `search_context` latency p50 / p95 | — | 1.0 / 1.2 ms (in-memory) | 157 / 221 ms (Bedrock embedding call) | 163 / 286 ms (Bedrock embedding call) |
+| `find_related` latency p50 / p95 | — | 0.2 / 0.4 ms (in-memory) | 0.7 / 3.8 ms (in-memory store) | 0.8 / 3.7 ms (SQLite store) |
 
 ¹ The baseline could not run any offline evaluation: it had no in-process store or embedder,
 did not ingest repository files, and its only harness (`scripts/eval_semantic_index.py`)
@@ -101,7 +102,9 @@ READMEs). They carry a status (`claimed`, `removed`, `proposed`, …), not `curr
 bodies have no line-anchored revision, which lowers provenance coverage. Edges counted as
 unsupported have neither a parsed configuration reference nor a verified quote.
 
-Both modes use the in-memory store, so latency excludes OpenSearch Serverless. Dollar costs are
+Latency excludes OpenSearch Serverless; every run uses an in-process store. Offline, the
+SQLite store (`--store sqlite`) produces results identical to the in-memory store on every case
+and metric. Dollar costs are
 not computed unless you pass prices.
 
 ## How to read these numbers

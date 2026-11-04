@@ -225,12 +225,11 @@ resource "aws_ebs_volume" "data" {
 }
 
 resource "aws_instance" "server" {
-  ami                         = data.aws_ssm_parameter.al2023_arm64.insecure_value
-  instance_type               = var.instance_type
-  subnet_id                   = aws_subnet.public.id
-  vpc_security_group_ids      = [aws_security_group.server.id]
-  iam_instance_profile        = aws_iam_instance_profile.server.name
-  associate_public_ip_address = false # the elastic IP below provides the (stable) address
+  ami                    = data.aws_ssm_parameter.al2023_arm64.insecure_value
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.public.id
+  vpc_security_group_ids = [aws_security_group.server.id]
+  iam_instance_profile   = aws_iam_instance_profile.server.name
 
   # Standard credits: the instance slows down when its CPU credits run out instead of
   # billing surplus credits, so the monthly cost cannot exceed the on-demand price.
@@ -261,7 +260,8 @@ resource "aws_instance" "server" {
 
   lifecycle {
     # A newer AMI must not replace the server on every apply; patch with `./aquifer-aws upgrade-os`.
-    ignore_changes = [ami]
+    # The elastic IP makes AWS report a public address; that is not a configuration change.
+    ignore_changes = [ami, associate_public_ip_address]
   }
 
   tags = { Name = var.name }

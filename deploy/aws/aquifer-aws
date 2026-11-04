@@ -92,7 +92,8 @@ wait_ready() {
     sleep 5
   done
   for _ in $(seq 1 60); do
-    if remote "grep -q 'bootstrap complete' /var/log/aquifer-bootstrap.log && curl -fsS http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then
+    # A subshell: `remote` exits on failure, which must not end this polling loop.
+    if (remote "grep -q 'bootstrap complete' /var/log/aquifer-bootstrap.log && curl -fsS http://127.0.0.1:8080/healthz") >/dev/null 2>&1; then
       ok "server healthy"; return 0
     fi
     sleep 10

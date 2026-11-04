@@ -158,3 +158,18 @@ def test_dimension_mismatch_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="dimensions"):
         store.upsert([bad])
     assert store.list_document_ids({"repo": "o/r"}) == {"d1"}
+
+
+def test_fast_top_k_matches_the_reference_ranking(tmp_path):
+    """Unfiltered search uses a numpy top-k; ranking (ties, vectorless chunks) must not change."""
+    ref, fast = InMemoryVectorStore(), SqliteVectorStore(tmp_path / "index.db")
+    texts = ["alpha beta", "alpha beta", "beta gamma", "gamma delta", "alpha", "zeta"] * 5
+    chunks = [_chunk(f"d{i}", text=t, gen=f"g{i}") for i, t in enumerate(texts)]
+    chunks.append(_chunk("novec").model_copy(update={"embedding": []}))
+    for store in (ref, fast):
+        store.upsert(chunks)
+    for k in (1, 3, 7, 40):
+        for query in ("alpha beta", "gamma", "unrelated words"):
+            v = EMB.embed_query(query)
+            assert ([(h.chunk_id, h.score) for h in fast.query(v, k)]
+                    == [(h.chunk_id, h.score) for h in ref.query(v, k)]), (k, query)
