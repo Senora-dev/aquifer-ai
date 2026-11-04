@@ -263,11 +263,17 @@ class AossVectorStore(VectorStore):
             {"term": {"document_id": document_id}},
             ["generation", "updated_at", "revision_committed_at", "indexed_at"],
         )
-        # Only lower-ranked generations: never a newer version written concurrently, and two
-        # writers of the same version converge on one survivor.
+        # Keep only the highest-ranked generation visible (ours, or a newer one written
+        # concurrently, in which case our now-stale write is removed). Writers converge in any
+        # order; the best generation is never deleted.
         own = chunks[0].generation
+        best = max([ours, *(generation_rank(h) for h in existing
+                            if h.get("generation") != own)])
+        # Our chunks are recognized by generation id (their stored fields may not be visible
+        # yet); they are removed only when a strictly newer generation exists.
         self._delete_ids([h["_id"] for h in existing
-                          if h.get("generation") != own and generation_rank(h) < ours])
+                          if (h.get("generation") == own and ours < best)
+                          or (h.get("generation") != own and generation_rank(h) < best)])
 
     def delete_by_document(self, document_id: str) -> None:
         self.delete_by_filter({"document_id": document_id})

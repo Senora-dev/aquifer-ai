@@ -80,7 +80,8 @@ class Lake:
         return dict(totals)
 
 
-def build_lake(corpus: Path, *, mode: str = "offline", workdir: Path | None = None) -> Lake:
+def build_lake(corpus: Path, *, mode: str = "offline", workdir: Path | None = None,
+               store: str = "memory") -> Lake:
     """Copy ``corpus`` (so cases can mutate it) and ingest it."""
     root = Path(tempfile.mkdtemp(prefix="aquifer-bench-", dir=workdir))
     shutil.copytree(corpus, root, dirs_exist_ok=True)
@@ -107,7 +108,13 @@ def build_lake(corpus: Path, *, mode: str = "offline", workdir: Path | None = No
         inner = HashingEmbedder(512)
         indexer = None
     embedder = _MeteredEmbedder(inner)
-    store = InMemoryVectorStore()
+    if store == "sqlite":
+        from aquifer.vectorstore.sqlite import SqliteVectorStore
+
+        vector_store = SqliteVectorStore(root / ".aquifer-bench" / "index.db")
+    else:
+        vector_store = InMemoryVectorStore()
+    store = vector_store
     interceptor = SemanticIndexInterceptor(indexer=indexer)
     pipeline = IngestionPipeline(
         connector=connector, embedder=embedder, vector_store=store,
@@ -401,9 +408,10 @@ def _pct(values: list[float], q: float) -> float | None:
 
 
 def run_benchmark(corpus: Path, cases_path: Path, *, mode: str = "offline",
-                  golden_path: Path | None = None, prices: dict | None = None) -> dict:
+                  golden_path: Path | None = None, prices: dict | None = None,
+                  store: str = "memory") -> dict:
     cases = load_cases(cases_path)
-    base = build_lake(corpus, mode=mode)
+    base = build_lake(corpus, mode=mode, store=store)
     ingest_stats = dict(base.stats)
     extraction_states = dict(base.tools.vector_store.facet("extraction_status", None) or [])
     extraction_errors = dict(base.tools.vector_store.facet("extraction_error", None) or [])
@@ -420,7 +428,7 @@ def run_benchmark(corpus: Path, cases_path: Path, *, mode: str = "offline",
                                       checks=[{"check": "requires LLM extraction",
                                                "ok": True}]))
             continue
-        lake = build_lake(corpus, mode=mode) if case.get("mutations") else base
+        lake = build_lake(corpus, mode=mode, store=store) if case.get("mutations") else base
         results.append(run_case(lake, case))
         if lake is not base:
             shutil.rmtree(lake.root, ignore_errors=True)
@@ -467,6 +475,7 @@ def run_benchmark(corpus: Path, cases_path: Path, *, mode: str = "offline",
     return {
         "report_version": REPORT_VERSION,
         "mode": mode,
+        "store": store,
         "embedder": "bedrock" if mode == "bedrock" else "hashing (lexical, offline)",
         "extraction_mode": "deterministic + LLM" if mode == "bedrock" else "deterministic only",
         "corpus": {"documents_indexed": ingest_stats.get("indexed"), **ingest_stats},

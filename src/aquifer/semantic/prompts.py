@@ -16,9 +16,10 @@ touching the engine.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError, field_validator
 
 from aquifer.core.models import DocumentKind, SourceType
 
@@ -48,6 +49,50 @@ class LlmSemanticOutput(BaseModel):
     entities: list[LlmEntity] = Field(default_factory=list)
     topics: list[str] = Field(default_factory=list)
     relationships: list[LlmRelationship] = Field(default_factory=list)
+    # Items the model returned that do not fit the contract (e.g. a relationship without a
+    # target). They are dropped individually instead of failing the whole document.
+    _dropped: int = PrivateAttr(default=0)
+
+    @property
+    def dropped(self) -> int:
+        return self._dropped
+
+    @field_validator("entities", "relationships", mode="before")
+    @classmethod
+    def _keep_valid_items(cls, items, info):  # noqa: ANN001, ANN206
+        if not isinstance(items, list):
+            return []
+        model = LlmEntity if info.field_name == "entities" else LlmRelationship
+        valid = []
+        for item in items:
+            try:
+                parsed = model.model_validate(item)
+            except ValidationError:
+                continue
+            if all(str(getattr(parsed, f, "x")).strip() for f in ("type", "name", "target")
+                   if f in model.model_fields):
+                valid.append(parsed)
+        _DROPPED.set(_DROPPED.get() + len(items) - len(valid))
+        return valid
+
+    @field_validator("topics", mode="before")
+    @classmethod
+    def _keep_text_topics(cls, items):  # noqa: ANN001, ANN206
+        return [t for t in items if isinstance(t, str) and t.strip()] if isinstance(
+            items, list) else []
+
+    @classmethod
+    def parse(cls, data: dict) -> LlmSemanticOutput:
+        token = _DROPPED.set(0)
+        try:
+            out = cls.model_validate(data)
+            out._dropped = _DROPPED.get()
+        finally:
+            _DROPPED.reset(token)
+        return out
+
+
+_DROPPED: ContextVar[int] = ContextVar("aquifer_llm_dropped", default=0)
 
 
 # The JSON contract, generated from the model so it cannot drift from what is parsed.

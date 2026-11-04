@@ -3,6 +3,41 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — Affordable single-server deployment
+
+The default deployment now costs **about $20 a month** (eu-west-1, before model usage) instead
+of ~$500. The OpenSearch Serverless stack remains as the optional scale profile.
+
+### Added
+- `aquifer serve`: one process runs the MCP server, a scheduler and ingestion workers. Its
+  durable SQLite job queue offers leases (interrupted runs are redelivered), exponential
+  backoff, dead letters, deduplication of periodic jobs and rate-limit postponement.
+- `aquifer` CLI: `status`, `sync [--full]`, `retry-failed`, `dead-letters`, `init`.
+- SQLite index (`vector_store.backend=sqlite`): the same records and semantics as the other
+  stores (identical benchmark results), transactional replacement, numpy top-k search,
+  multi-process reload.
+- Secret references: `ssm:`, `file:` and `env:` in addition to Secrets Manager ids.
+- `deploy/aws`: Terraform for one t4g.small server with an encrypted data volume, daily
+  snapshots, CloudWatch Logs, SSM parameters and optional HTTPS (Caddy). `aquifer-aws` drives
+  check, plan, up, deploy, sync, status, connect, tests, rotation, OS upgrades and down.
+- `Dockerfile.server` and `deploy/docker` for running on existing infrastructure.
+- `docs/cost.md`: the verified cost of the previous default, an itemized estimate, measured
+  resource usage and the tradeoffs.
+- Benchmark `--store sqlite`.
+
+### Changed
+- `./aquifer-aws configure` prefers Claude Haiku 4.5 for extraction. It costs about a third of
+  Sonnet per document; benchmark: 52/52 cases, relationship recall 0.86.
+- Discovery and the worker run on a pluggable runtime (`ingestion/runtime.py`): SQS, S3 and
+  Secrets Manager on Lambda; the SQLite queue on a single server.
+- The Terraform evaluation environment for the OpenSearch stack (`deploy/terraform`) is
+  replaced by `deploy/aws`.
+
+### Fixed
+- One malformed item in an LLM response (e.g. a relationship with `"target": null`, seen with
+  Claude Haiku 4.5) no longer fails the whole document's extraction; that item is dropped and
+  counted (`llm_output_items_dropped`).
+
 ## [Unreleased] — Context correctness and extraction reliability
 
 Found by deploying Engineering Context v1 to AWS and ingesting real GitHub repositories.
@@ -37,6 +72,8 @@ Found by deploying Engineering Context v1 to AWS and ingesting real GitHub repos
   actionable error codes (Bedrock Marketplace subscription, use-case form, model availability,
   access, credentials), backlog in `list_sources` and discovery logs.
 - `aquifer-test check` explains Bedrock setup problems; `aquifer-test retry-failed`.
+- Docs: Bedrock benchmark results, evaluation environment in the README, GitHub token rotation
+  and retry operations, and a clear line between planned push ingestion and synchronization.
 - Benchmark status scenarios and regression tests for additions, removals, replacements,
   negations, proposals, merged/unmerged PRs, conflicting evidence, retries and lifecycle.
 

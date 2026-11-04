@@ -90,39 +90,55 @@ Re-processing is safe: unchanged documents are skipped and writes are idempotent
 
 ## Cost
 
-Prices below are **us-east-1 list prices at the time of writing**, rounded; confirm with the
-[AWS Pricing Calculator](https://calculator.aws/) for your region. "Idle" means deployed with no
-ingestion or queries.
+Itemized, region-specific figures and measurements are in [cost.md](./cost.md). In short
+(eu-west-1, baseline before model usage):
 
-| Resource | Why it exists | Approx. idle cost / month |
+| Profile | Baseline / month | Dominant cost |
 | --- | --- | --- |
-| OpenSearch Serverless collection | The index | **~$350** (minimum 2 OCUs × $0.24/OCU-hour); **~$175** with `aoss_standby_replicas=DISABLED` (1 OCU); plus $0.02/GB-month storage |
-| NAT gateway (1) | HTTPS egress to GitHub, ECR, CloudWatch Logs | ~$33 + $0.045/GB processed |
-| Interface VPC endpoints (Bedrock runtime, Secrets Manager, SQS, OpenSearch) | Keep AWS traffic off the internet | ~$15 each across 2 AZs (~$60) |
-| Network Load Balancer (internal) | Stable MCP endpoint | ~$16 + LCU usage |
-| Fargate task (0.5 vCPU, 1 GB) | MCP server, always on | ~$18 |
-| Secrets Manager (2 secrets), CloudWatch alarms, logs | Credentials, alarms | ~$2 + log ingestion |
-| Lambda, SQS, EventBridge, S3 | Ingestion | Near zero when idle |
-| **Total idle** | | **≈ $480** (≈ $305 with standby replicas disabled) |
+| Small (default, `deploy/aws`) | ≈ $20 | t4g.small instance ($13.43) and its IPv4 address ($3.65) |
+| Existing infrastructure (`Dockerfile.server`) | $0 extra | your host |
+| Scale (CDK) | ≈ $504, or ≈ $320 with `aoss_standby_replicas=DISABLED` | OpenSearch Serverless minimum capacity ($183–366), then NAT, VPC endpoints, NLB |
 
-Usage-based costs:
+Usage-based costs are the same in every profile:
 
-- **Bedrock embeddings** — every indexed chunk once, every query once. Unchanged documents are
+- **Bedrock embeddings**: every indexed chunk once, every query once. Unchanged documents are
   skipped by content hash, so steady-state cost tracks the volume of *changes*.
-- **Bedrock LLM extraction** — one call per new/changed README, issue, PR or ADR (input is
-  truncated to `max_input_chars`, default 12,000). Terraform/compose/Backstage files use the free
-  deterministic parsers instead (unless `llm_for_structured_files` is enabled). Set
-  `-c semantic_index_enabled=false` to remove this cost entirely.
-- **OpenSearch** scales OCUs above the minimum under indexing/search load.
+- **Bedrock LLM extraction**: one call per new or changed README, issue, PR or ADR. Input is
+  truncated to `max_input_chars` (default 12,000 characters). Terraform, compose and Backstage
+  files use the free deterministic parsers instead, unless `llm_for_structured_files` is
+  enabled. Claude Haiku 4.5 costs about a third of Sonnet per document. Disable extraction to
+  remove this cost entirely.
 
 `python scripts/benchmark_retrieval.py --bedrock --price-embed-per-1k … --price-llm-input-per-1k …`
-reports token volumes for the benchmark corpus and, if you pass current prices, a dollar
-estimate.
+reports token volumes for the benchmark corpus, plus a dollar estimate if you pass current
+prices.
 
-**Reducing cost:** use `aoss_standby_replicas=DISABLED` for non-production; delete the stack
-when not in use (`cdk destroy`); keep `schedule_minutes` reasonable; disable LLM extraction if
-deterministic extraction and search are enough. No component in the stack is optional at
-runtime except LLM extraction.
+## Operating the small profile
+
+The single server runs `aquifer serve` under systemd: one process with the MCP server, a
+scheduler and two ingestion workers. Its durable job queue (SQLite) gives the same guarantees
+as SQS:
+- **At-least-once delivery.** A job claimed by a process that died is reclaimed when its lease
+  expires, or immediately at the next start.
+- **Retries.** A failed job is retried with backoff (30 s doubling, up to 1 hour) and moved to
+  the **dead letters** after 5 attempts.
+- **Rate limits.** When a source rate-limits a page, the job is postponed until the reset
+  time; that does not count as a failure.
+
+| Signal | Where |
+| --- | --- |
+| Queue, last sync (and last error), index size, extraction backlog, dead letters | `./aquifer-aws status` (`aquifer status --json` on the server) |
+| Structured events (`job_processed`, `job_failed`, `discovery_complete`, `semantic_extraction_failed`, …) | `./aquifer-aws logs 30` (CloudWatch group `/aquifer/<name>`) |
+| Liveness | `GET /healthz` (no auth, no data) |
+| Memory, CPU, disk | `./aquifer-aws metrics` |
+
+Recovery:
+- After fixing the cause of dead letters, run `./aquifer-aws run dead-letters --requeue all`.
+- After fixing model access, run `./aquifer-aws retry-failed`.
+- Backups are daily EBS snapshots of the data volume; see
+  [deploy/aws/README.md](../deploy/aws/README.md#backups-and-recovery) for the restore
+  procedure.
+- OS patches: `./aquifer-aws upgrade-os`.
 
 ## Upgrades
 
@@ -151,4 +167,4 @@ pull requests are fetched and re-extracted too; to force a full rebuild, deploy 
 | Search returns nothing for a repo | It is not in `repos`, ingestion has not run yet, or every job failed — check `list_sources` (`indexed_documents`) and the DLQ |
 | `extraction: {"retry_pending": n}` in `list_sources` | Extraction failed and is scheduled for automatic retry — see the `semantic_extraction_failed` `action` text |
 | `extraction_error: bedrock_*` | Bedrock setup — see [deployment.md](./deployment.md#bedrock-model-access) |
-| `extraction_status: failed` | Retry budget used up (or the model repeatedly rejected this document's input). Retried when its content changes. After fixing the cause, invoke discovery with `{"retry_failed": true}` (`aws lambda invoke --payload '{"retry_failed":true}' …`, or `./aquifer-test retry-failed`) to re-run them with a fresh budget |
+| `extraction_status: failed` | Retry budget used up (or the model repeatedly rejected this document's input). Retried when its content changes. After fixing the cause, invoke discovery with `{"retry_failed": true}` (`aws lambda invoke --payload '{"retry_failed":true}' …`, `./aquifer-aws retry-failed`, or `aquifer retry-failed` on a single server) to re-run them with a fresh budget |

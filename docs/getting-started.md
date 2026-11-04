@@ -25,7 +25,7 @@ pip install -e ".[dev]"
 
 # Index every repository directory under a root (re-run any time; unchanged files are skipped)
 python -m aquifer.local ingest examples/demo/repos
-# → indexed=17 unchanged=0 failed=0 deleted=0 store=.aquifer-local/index.json
+# → indexed=20 unchanged=0 failed=0 deleted=0 store=.aquifer-local/index.json
 ```
 
 Serve it to an MCP client over stdio (the client starts the process):
@@ -62,13 +62,17 @@ credentials and costs money).
 
 ## AWS deployment
 
-See [deployment.md](./deployment.md). In short:
+The default is one small server (~$20/month in eu-west-1, plus model usage):
 
 ```bash
-pip install -e ".[dev,cdk]" && npm install -g aws-cdk
-python scripts/preflight.py --region <region> --repos your-org/your-repo
-cd infrastructure && cdk bootstrap && cdk deploy -c repos='["your-org/your-repo"]'
+cd deploy/aws
+./aquifer-aws check
+AQUIFER_REPOS='["your-org/your-repo"]' ./aquifer-aws configure
+./aquifer-aws plan && ./aquifer-aws up && ./aquifer-aws connect
 ```
+
+See [deploy/aws/README.md](../deploy/aws/README.md). To run on infrastructure you already have
+(Docker) or on the OpenSearch scale profile, see [deployment.md](./deployment.md).
 
 ---
 

@@ -10,6 +10,20 @@ MCP client can read every allowlisted repository and nothing else.** Aquifer doe
 GitHub's per-user or per-team permissions. Only configure repositories that every token holder
 is allowed to read; run separate deployments for separate trust domains.
 
+## Deployment profiles
+
+The controls below apply to every profile unless a row names one. The **small profile**
+(`deploy/aws`, one server) differs from the **scale profile** (CDK) in these ways:
+
+| Area | Small profile | Scale profile |
+| --- | --- | --- |
+| Network exposure | Public subnet with **no inbound ports**. Agents reach MCP through an SSM port forward (IAM-authenticated), or HTTPS on 443 if you set `domain` (Caddy, Let's Encrypt, optional `https_allowed_cidrs`) | Private subnets, internal NLB |
+| Egress | Security group allows outbound TCP 443 only, via the instance's Elastic IP; AWS APIs are reached over their public endpoints (TLS, SigV4) | Outbound 443 only, via NAT; AWS APIs through VPC endpoints |
+| Secrets | SSM Parameter Store SecureStrings under `/aquifer/<name>/` (AWS-managed key). The GitHub token is copied from `gh` through a 0600 temporary file, never argv; the MCP token is generated on the server. Neither enters Terraform state | Secrets Manager |
+| Instance | IMDSv2 required (hop limit 1), no SSH key, no inbound rules. Service runs as a non-root system user with `ProtectSystem=strict`, `NoNewPrivileges`, `PrivateTmp`, and write access only to its data and log directories | Fargate, non-root, read-only root filesystem |
+| IAM | Bedrock invoke on the configured model ARNs only; SSM parameters under the deployment's own path; read on its own artifact bucket; write to its own log group; SSM managed-instance core | Per-role least privilege |
+| Data at rest | Encrypted EBS root and data volumes; snapshots inherit encryption | OpenSearch Serverless (AWS-owned key), SQS SSE, S3 SSE |
+
 ## Enforced controls
 
 | Control | How it is enforced | Tested in |
@@ -31,12 +45,15 @@ is allowed to read; run separate deployments for separate trust domains.
 - **Per-user / per-agent source permissions.** All tokens share one trust domain.
 - **SSO / OIDC / RBAC.** Tokens are static bearer secrets. Rotate by editing the secret and
   restarting the MCP service.
-- **Transport encryption inside the VPC by default.** Without `-c mcp_certificate_arn`, the NLB
-  listener is plain TCP on port 80 and bearer tokens cross the VPC network unencrypted. Use a
-  certificate for anything beyond a tightly controlled VPC.
+- **Transport encryption inside the VPC by default (scale profile).** Without
+  `-c mcp_certificate_arn`, the NLB listener is plain TCP on port 80 and bearer tokens cross the
+  VPC network unencrypted. Use a certificate for anything beyond a tightly controlled VPC. In the
+  small profile, traffic is encrypted by the SSM tunnel or by HTTPS when `domain` is set.
+- **High availability (small profile).** One instance in one AZ; see docs/cost.md#tradeoffs.
 - **Customer-managed KMS keys.** The collection uses an AWS-owned key.
-- **Egress allowlisting by domain.** The NAT gateway permits HTTPS to any destination; a
-  network firewall or proxy is needed to restrict egress to `api.github.com`.
+- **Egress allowlisting by domain.** Outbound HTTPS is allowed to any destination (through the
+  NAT gateway or the small profile's Elastic IP). A network firewall or proxy is needed to
+  restrict egress to `api.github.com` and AWS endpoints.
 - **Deleted issues/PRs** are not detected (see README limitations).
 
 The interceptor seam (`authorize`, `before_query`, `after_query`, `before_ingest`) receives the
@@ -46,9 +63,9 @@ external policy engine without modifying the core.
 ## Data residency
 
 Indexed content, embeddings and metadata stay in the deployment account and region. Bedrock is
-called in the stack's region through a VPC endpoint; a cross-region *inference profile*
+called in the deployment's region (through a VPC endpoint in the scale profile); a cross-region *inference profile*
 configured as the extraction model may route requests to other regions in its geography.
-GitHub content is fetched over the internet (through the NAT gateway) from `api.github.com`.
+GitHub content is fetched over the internet from `api.github.com`.
 
 ## Prompt injection and untrusted content
 

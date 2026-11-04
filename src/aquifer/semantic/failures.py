@@ -76,7 +76,7 @@ def classify_extraction_error(exc: BaseException) -> ExtractionFailure:
         return ExtractionFailure(
             "bedrock_model_not_found", "configuration",
             "Bedrock could not find the extraction model in this region (retired or wrong id). "
-            "Run ./aquifer-test check or scripts/preflight.py and set extraction_model_id.")
+            "Run deploy/aws/aquifer-aws check or scripts/preflight.py and set extraction_model_id.")
     if code == "ValidationException" and ("model identifier" in text or "model id" in text):
         return ExtractionFailure(
             "bedrock_invalid_model", "configuration",

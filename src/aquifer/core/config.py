@@ -64,10 +64,12 @@ class VectorStoreSettings(_Base):
     space_type: str = "cosinesimil"
     # Default number of results returned by a search.
     default_k: int = 10
-    # "opensearch" (production) or "memory": an in-process store for tests and the local demo,
-    # optionally persisted to ``memory_path`` as JSON.
-    backend: Literal["opensearch", "memory"] = "opensearch"
+    # "opensearch" (scale profile), "sqlite" (single-server profile: SQLite on local disk,
+    # vectors searched in memory) or "memory" (tests and the local demo, optionally persisted to
+    # ``memory_path`` as JSON).
+    backend: Literal["opensearch", "sqlite", "memory"] = "opensearch"
     memory_path: str = ""
+    sqlite_path: str = "/var/lib/aquifer/index.db"
     # opensearch-py client retries for 429/5xx/timeouts.
     max_retries: int = 3
     timeout_s: int = 30
@@ -77,7 +79,9 @@ class GitHubSettings(_Base):
     """GitHub connector configuration."""
 
     api_url: str = "https://api.github.com"
-    # ARN/name of the Secrets Manager secret holding the GitHub token.
+    # Where the GitHub token is stored: a Secrets Manager id/ARN, or a reference such as
+    # "ssm:/aquifer/github-token", "file:/run/secrets/github-token" or "env:GITHUB_TOKEN"
+    # (see aquifer.core.secrets).
     token_secret: str = ""
     # JSON array of exact "owner/repo" names, e.g. ["acme/billing", "acme/infra"].
     # Wildcards are not supported. Every listed repository is one trust domain: any
@@ -198,6 +202,29 @@ class McpSettings(_Base):
     auth_mode: Literal["token", "none"] = "token"
     # {"principal-name": "token"} — injected from Secrets Manager in the deployed stack.
     auth_tokens: dict[str, str] = Field(default_factory=dict, repr=False)
+    # Alternatively, a secret reference (e.g. "ssm:/aquifer/mcp-tokens") to the same JSON
+    # object, read at startup. Used by the single-server profile.
+    auth_tokens_ref: str = ""
+
+
+class NodeSettings(_Base):
+    """The single-server runtime (``aquifer serve``): scheduler, job queue and workers."""
+
+    # Directory for the job queue and ingestion state (SQLite). The index lives at
+    # ``vector_store.sqlite_path``.
+    data_dir: str = "/var/lib/aquifer"
+    # Run GitHub discovery this often (seconds). Unchanged content is skipped by hash, so
+    # frequent runs cost GitHub API calls but no model calls.
+    sync_interval_s: int = 900
+    # Ingestion worker threads. Bedrock latency, not CPU, bounds throughput.
+    workers: int = 2
+    # A failed job is retried with exponential backoff (job_retry_base_s, doubling, capped at
+    # job_retry_max_s) and moved to the dead-letter list after job_max_attempts.
+    job_max_attempts: int = 5
+    job_retry_base_s: int = 30
+    job_retry_max_s: int = 3600
+    # A job claimed by a worker that died (crash, restart) is reclaimed after this lease.
+    job_lease_s: int = 1800
 
 
 class Settings(_Base):
@@ -212,6 +239,7 @@ class Settings(_Base):
     ingestion: IngestionSettings = Field(default_factory=IngestionSettings)
     semantic_index: SemanticIndexSettings = Field(default_factory=SemanticIndexSettings)
     mcp: McpSettings = Field(default_factory=McpSettings)
+    node: NodeSettings = Field(default_factory=NodeSettings)
 
     # Dotted import paths of Interceptor implementations to load, in order.
     # OSS default is empty (pass-through). Enterprise sets e.g.

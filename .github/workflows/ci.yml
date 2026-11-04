@@ -73,18 +73,38 @@ jobs:
             echo "server started without tokens" && exit 1
           fi
 
+  server-image:
+    name: Single-server image builds and serves
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (no push)
+        run: docker build -f Dockerfile.server -t aquifer-server:ci .
+      - name: Starts without AWS, creates a token, answers health and rejects unauthenticated MCP
+        run: |
+          mkdir -p data && chmod 777 data
+          docker run -d --name aq -p 127.0.0.1:8080:8080 -v "$PWD/data:/data" \
+            -e AQUIFER_EMBEDDING__PROVIDER=hashing -e AQUIFER_SEMANTIC_INDEX__ENABLED=false \
+            -e AQUIFER_MCP__AUTH_TOKENS_REF=file:/data/mcp-tokens.json aquifer-server:ci
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8080/healthz
+          test "$(stat -c %a data/mcp-tokens.json)" = 600
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/mcp)
+          test "$code" = 401
+          docker exec aq aquifer status
+          docker rm -f aq
+
   terraform:
-    name: Terraform evaluation environment validates
+    name: Terraform (small profile) validates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
       - name: fmt + validate (no AWS access)
-        working-directory: deploy/terraform
+        working-directory: deploy/aws
         run: |
           terraform fmt -check -recursive
           terraform init -backend=false -input=false
-          mkdir -p .build && touch .build/lambda.zip
           terraform validate
       - name: Shell scripts parse
-        run: bash -n deploy/terraform/aquifer-test deploy/terraform/scripts/seed-github-repos.sh
+        run: bash -n deploy/aws/aquifer-aws deploy/aws/scripts/seed-github-repos.sh

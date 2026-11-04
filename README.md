@@ -78,22 +78,27 @@ path; see [docs/getting-started.md](docs/getting-started.md).
 
 ## How data flows
 
+The default deployment is **one small server** (≈ $20/month on AWS, or a container on
+infrastructure you already run):
+
 ```mermaid
 flowchart LR
-    subgraph VPC["Your AWS account — private subnets"]
-        EB[EventBridge schedule] --> DL[Discovery Lambda]
-        DL -->|fetch jobs| SQS[(SQS + DLQ)]
-        SQS --> WL[Worker Lambda]
-        WL -->|parse Terraform / YAML| WL
-        WL -->|embed + LLM extraction| BR[[Bedrock via VPC endpoint]]
-        WL -->|chunks + metadata + provenance| OS[(OpenSearch Serverless, VPC-only)]
-        MCP[Fargate MCP server] -->|embed query| BR
-        MCP -->|read-only| OS
-        NLB[Internal NLB] --> MCP
+    AG[Authorized AI agent] -->|MCP + bearer token, via SSM tunnel or HTTPS| S
+    subgraph S["One server: aquifer serve"]
+        SCH[Scheduler] --> Q[(Job queue: retries, dead letters)]
+        Q --> W[Ingestion workers]
+        W -->|parse Terraform / YAML| W
+        W -->|chunks + metadata + provenance| IX[(SQLite index, encrypted volume)]
+        MCP[MCP server] -->|read-only| IX
     end
-    GH[GitHub API] -->|HTTPS via NAT| WL
-    AG[Authorized AI agent] -->|MCP + bearer token| NLB
+    GH[GitHub API] -->|HTTPS| W
+    W -->|embed + LLM extraction| BR[[Amazon Bedrock]]
+    MCP -->|embed query| BR
 ```
+
+A **scale profile** (CDK: Lambda + SQS ingestion, OpenSearch Serverless, Fargate behind an
+internal NLB, all in private subnets) runs the same code for multi-AZ availability and large
+indexes. See [docs/deployment.md](docs/deployment.md).
 
 1. **Fetch.** The GitHub connector reads READMEs, issues, pull requests and selected files
    (Terraform, docker-compose, Backstage descriptors, ADRs) from a pinned commit of the default
@@ -103,32 +108,37 @@ flowchart LR
    (adds, removes, proposes, negates) and a verbatim quote that is checked against the source.
    Each relationship gets a status: only configuration parsed at a revision is `current`; prose
    yields `claimed`, `removed`, `proposed`, `not_merged` or `discussed`.
-3. **Index.** Chunks (exact source slices with line ranges) are embedded and written to
-   OpenSearch Serverless. Updates write a new generation before removing the old one; deleted
+3. **Index.** Chunks (exact source slices with line ranges) are embedded and written to the
+   index: SQLite on the server's encrypted volume, or OpenSearch Serverless in the scale profile. Updates write a new generation before removing the old one; deleted
    files, removed READMEs and de-listed repositories are removed from the index.
 4. **Retrieve.** Agents call the MCP tools with a bearer token. Every call is authorized,
    scoped to the configured repositories, and audit-logged.
 
 ## What stays in your infrastructure
 
-- Source content, embeddings, extracted metadata and the index live in your account
-  (OpenSearch Serverless reachable only through a VPC endpoint).
-- Embedding and extraction run on Amazon Bedrock **in the stack's region**, reached through a
-  VPC interface endpoint. If you configure a *cross-region inference profile* as the extraction
-  model (e.g. `us.anthropic…`), Bedrock may process requests in other regions of that geography.
+- Source content, embeddings, extracted metadata and the index live in your account, on the
+  server's encrypted EBS volume (or, in the scale profile, in OpenSearch Serverless reachable
+  only through a VPC endpoint).
+- Embedding and extraction run on Amazon Bedrock in your region. If you configure a
+  *cross-region inference profile* as the extraction model (e.g. `eu.anthropic…`), Bedrock may
+  process requests in other regions of that geography.
 - There is no Aquifer-operated backend, telemetry, or license server.
 
-**Network dependencies:** outbound HTTPS to `api.github.com` (through the NAT gateway), and
-to ECR and CloudWatch Logs (also through NAT, to avoid extra endpoint costs). Application
-security groups allow outbound TCP 443 only. The MCP endpoint is an internal load balancer —
-it is never exposed to the internet.
+**Network:**
+- **Small profile.** The server has no inbound ports. Agents reach MCP through an SSM port
+  forward, or through HTTPS on port 443 if you configure a domain. Outbound HTTPS (443 only)
+  goes to GitHub and AWS APIs over the server's public IPv4 address.
+- **Scale profile.** Everything runs in private subnets: Bedrock, Secrets Manager and SQS are
+  reached through VPC endpoints, GitHub through a NAT gateway, and MCP sits behind an internal
+  load balancer.
 
 ## Permissions model
 
 Aquifer enforces **one trust domain**: every valid MCP token can read every repository in the
 configured allowlist, and nothing else. Concretely:
 
-- MCP requests require `Authorization: Bearer <token>`; tokens live in Secrets Manager.
+- MCP requests require `Authorization: Bearer <token>`; tokens live in SSM Parameter Store
+  (small profile) or Secrets Manager (scale profile), never in Terraform state.
 - All tools pass through the interceptor seam (`authorize`, `before_query`, `after_query`) and a
   core repository scope, so results from outside the allowlist are never returned.
 - Aquifer does **not** mirror GitHub's per-user permissions. Only configure repositories that
@@ -141,37 +151,59 @@ limitations.
 
 GitHub: READMEs, issues, pull requests (with merged/open state), and repository files matching
 configurable globs. Deterministic extraction: Terraform (`.tf`), docker-compose, Backstage
-`catalog-info.yaml`. Other connectors can be added through the `Connector` interface
+`catalog-info.yaml`. Local mode also indexes repository directories on disk (for development and
+evaluation). Other connectors can be added through the `Connector` interface
 ([docs/contributing.md](docs/contributing.md)).
+
+**Planned, not yet available:**
+
+- **Push ingestion over MCP and HTTP.** An agent or pipeline sends documents to Aquifer (for
+  example from a Jira, Notion or Slack MCP server it is connected to) with a write-scoped token.
+  This is *push*, not synchronization: Aquifer knows only what was sent, and updates or deletions
+  in the original tool are reflected only when they are pushed too.
+- **Dedicated connectors with continuous synchronization**, starting with Jira.
+
+Being able to receive documents from an MCP-enabled tool does not mean Aquifer synchronizes with
+that tool.
 
 ## Deploying to AWS, and what it costs
 
 ```bash
-pip install -e ".[dev,cdk]" && npm install -g aws-cdk
-python scripts/preflight.py --region eu-west-1 --repos your-org/your-repo   # read-only checks
-cd infrastructure && cdk bootstrap && cdk deploy -c repos='["your-org/your-repo"]'
+cd deploy/aws
+./aquifer-aws check                                          # tools, AWS login, Bedrock access
+AQUIFER_REPOS='["your-org/your-repo"]' ./aquifer-aws configure
+./aquifer-aws plan                                           # lists every resource, creates nothing
+./aquifer-aws up && ./aquifer-aws connect                    # deploy, first sync, connect your agent
 ```
 
-Full guide: [docs/deployment.md](docs/deployment.md). Operations, observability, uninstall and
-troubleshooting: [docs/operations.md](docs/operations.md).
+**Baseline cost: about $20 a month** (eu-west-1). That covers one t4g.small instance, an
+encrypted data volume with daily snapshots, an Elastic IP and logs. There is no NAT gateway,
+load balancer or OpenSearch. Model usage is extra. With Claude Haiku 4.5, extraction costs about
+$0.0044 per new or changed document, and embeddings are negligible. Itemized estimate,
+measurements and tradeoffs: [docs/cost.md](docs/cost.md). `./aquifer-aws down` removes
+everything.
 
-**Idle cost is dominated by OpenSearch Serverless**, which bills a minimum of 2 OCUs while the
-collection exists (1 OCU with `-c aoss_standby_replicas=DISABLED`). At $0.24/OCU-hour (us-east-1)
-that is about **$350/month** (or ~$175 for dev/test) before any traffic. NAT gateway, VPC
-endpoints, the NLB and one small Fargate task add roughly $130/month. Bedrock is usage-based. See
-[docs/operations.md](docs/operations.md#cost) for the breakdown.
+Other options, documented in [docs/deployment.md](docs/deployment.md):
+- **Existing infrastructure:** `Dockerfile.server`, one container plus one volume.
+- **Scale profile:** CDK and OpenSearch Serverless, ≈ $320–$504 a month before traffic, for
+  multi-AZ availability and large indexes.
+
+Operations, observability and troubleshooting: [docs/operations.md](docs/operations.md).
 
 ## Current limitations
 
 - One trust domain per deployment; no per-user source permissions.
-- GitHub only. Deleted or transferred issues/PRs are not detected (GitHub's incremental API does
+- GitHub is the only synchronized source (push ingestion and a Jira connector are planned). Deleted or transferred issues/PRs are not detected (GitHub's incremental API does
   not report deletions); deleted files, removed READMEs and de-listed repositories are.
 - File provenance is the commit at which the file was read; issue/PR bodies have no revision
   (their `updated_at` is reported instead).
 - LLM-extracted relationships are claims: Aquifer checks the cited quote and the source context
   (merged / open / closed PR), but cannot verify that a claim is true.
-- The MCP listener is plain TCP inside the VPC unless you pass an ACM certificate
-  (`-c mcp_certificate_arn=…`).
+- The small profile is one server in one Availability Zone. Recovery after a failure takes
+  minutes, and the RPO is 24 hours from snapshots; the index can also be rebuilt from sources.
+  It is sized for ~25,000 chunks (measured; ~50,000 still work, more slowly).
+- MCP traffic is plain HTTP inside the SSM tunnel or the scale profile's VPC unless you
+  configure a domain (small profile) or an ACM certificate (`-c mcp_certificate_arn=…`).
 - The benchmark corpus is small and synthetic; it verifies behavior, not real-world accuracy.
 
 ## Measuring retrieval quality
@@ -181,8 +213,9 @@ python scripts/benchmark_retrieval.py --out report.json      # offline, determin
 python scripts/benchmark_retrieval.py --bedrock              # with your Bedrock (costs money)
 ```
 
-45 scenario cases (dependencies, Terraform module references, ADRs, similar names, stale and
-deleted sources, missing evidence, repository isolation). Results and caveats:
+52 scenario cases (dependencies, Terraform module references, ADRs, similar names, stale and
+deleted sources, missing evidence, repository isolation, and relationship status: removed vs
+proposed vs current). Offline: 43 passed, 0 failed, 9 skipped (need an LLM). With Bedrock: 52/52. Results and caveats:
 [docs/benchmark.md](docs/benchmark.md).
 
 ## Project layout

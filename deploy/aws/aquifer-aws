@@ -1,0 +1,511 @@
+#!/usr/bin/env bash
+# aquifer-aws — deploy and operate the small Aquifer profile (one server, ~$20/month) with Terraform.
+#
+#   ./aquifer-aws check           prerequisites, AWS login, Bedrock model access
+#   ./aquifer-aws seed            (optional) create private GitHub test repos from the demo data
+#   ./aquifer-aws configure       write terraform.tfvars (repos, region, extraction model)
+#   ./aquifer-aws plan            build the wheel + terraform plan (creates nothing)
+#   ./aquifer-aws up              apply that plan, store the GitHub token, wait for the first sync
+#   ./aquifer-aws deploy          rebuild and roll out code/configuration changes (no downtime for data)
+#   ./aquifer-aws sync [--full]   run discovery now and wait for the queue to drain
+#   ./aquifer-aws status          queue, last sync, index size, extraction backlog, dead letters
+#   ./aquifer-aws retry-failed    re-run extraction for documents that exhausted retries
+#   ./aquifer-aws github-token    copy the current `gh auth token` into SSM (rotation)
+#   ./aquifer-aws connect         forward the MCP endpoint to localhost for your agent
+#   ./aquifer-aws token           print the MCP bearer token
+#   ./aquifer-aws test            end-to-end MCP checks (+ idempotency)
+#   ./aquifer-aws test-updates    commit a change + a deletion to GitHub, re-sync, verify, revert
+#   ./aquifer-aws metrics         memory, CPU, disk and index size on the server
+#   ./aquifer-aws logs [minutes]  server logs from CloudWatch
+#   ./aquifer-aws run <cmd...>    run an `aquifer` CLI command on the server
+#   ./aquifer-aws upgrade-os      dnf upgrade + reboot (data volume is kept)
+#   ./aquifer-aws down            terraform destroy + delete this deployment's SSM parameters
+#
+# Environment: AQUIFER_REGION (default eu-west-1), AQUIFER_NAME (default aquifer),
+# AQUIFER_EXTRACTION_MODEL (override auto-detection), AQUIFER_LOCAL_PORT (default 18080),
+# AQUIFER_YES=1 (skip confirmations). Output lines `KEY=value` are meant for scripts and agents.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
+REGION="${AQUIFER_REGION:-eu-west-1}"
+NAME="${AQUIFER_NAME:-aquifer}"
+PORT="${AQUIFER_LOCAL_PORT:-18080}"
+BUILD="$HERE/.build"
+TF=(terraform -chdir="$HERE")
+export AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION" AWS_PAGER=""
+
+say()  { printf '\033[1m==> %s\033[0m\n' "$*" >&2; }
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$*" >&2; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$*" >&2; }
+die()  { printf '  \033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+confirm() {
+  [[ "${AQUIFER_YES:-}" == "1" ]] && return 0
+  read -r -p "$1 [y/N] " a; [[ "$a" == "y" || "$a" == "Y" ]]
+}
+tfout() { "${TF[@]}" output -raw "$1" 2>/dev/null; }
+
+python_bin() {
+  local venv="$ROOT/.venv"
+  if [[ ! -x "$venv/bin/python" ]]; then
+    say "creating $venv"
+    local py; py="$(command -v python3.12 || command -v python3.11 || command -v python3)"
+    "$py" -m venv "$venv"
+    "$venv/bin/pip" install -q --upgrade pip
+  fi
+  if ! "$venv/bin/python" -c "import aquifer, mcp, httpx, numpy" 2>/dev/null; then
+    "$venv/bin/pip" install -q -e "$ROOT[dev]"
+  fi
+  echo "$venv/bin/python"
+}
+
+# --- remote execution (SSM Run Command; no SSH, no open ports) ----------------------------------
+
+remote() {
+  # remote "<shell command>" — run on the server as root, print its output, fail on error.
+  local id cmd_id status
+  id="$(tfout instance_id)" || die "nothing deployed"
+  cmd_id="$(aws ssm send-command --instance-ids "$id" --document-name AWS-RunShellScript \
+    --parameters "$("$(python_bin)" -c 'import json,sys; print(json.dumps({"commands": [sys.argv[1]], "executionTimeout": ["3600"]}))' "$1")" \
+    --query Command.CommandId --output text)"
+  for _ in $(seq 1 720); do
+    status="$(aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$id" \
+      --query Status --output text 2>/dev/null || echo Pending)"
+    case "$status" in Pending|InProgress|Delayed) sleep 2 ;; *) break ;; esac
+  done
+  aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$id" \
+    --query StandardOutputContent --output text
+  local err; err="$(aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$id" \
+    --query StandardErrorContent --output text)"
+  [[ -n "$err" && "$err" != "None" ]] && echo "$err" >&2
+  [[ "$status" == "Success" ]] || die "remote command $status"
+}
+
+aq() { remote "runuser -u aquifer -- /opt/aquifer/venv/bin/aquifer $*"; }
+
+wait_ready() {
+  say "waiting for the server to finish its first boot (installs Python and Aquifer, ~3 min)"
+  local id; id="$(tfout instance_id)"
+  for _ in $(seq 1 90); do
+    if [[ "$(aws ssm describe-instance-information --filters "Key=InstanceIds,Values=$id" \
+      --query 'length(InstanceInformationList)' --output text 2>/dev/null)" == "1" ]]; then break; fi
+    sleep 5
+  done
+  for _ in $(seq 1 60); do
+    # A subshell: `remote` exits on failure, which must not end this polling loop.
+    if (remote "grep -q 'bootstrap complete' /var/log/aquifer-bootstrap.log && curl -fsS http://127.0.0.1:8080/healthz") >/dev/null 2>&1; then
+      ok "server healthy"; return 0
+    fi
+    sleep 10
+  done
+  remote "tail -40 /var/log/aquifer-bootstrap.log" || true
+  die "server did not become healthy"
+}
+
+# --- check -------------------------------------------------------------------------------------
+
+cmd_check() {
+  say "tools"
+  for t in aws terraform gh python3; do
+    command -v "$t" >/dev/null && ok "$t" || die "$t is not installed"
+  done
+  if command -v session-manager-plugin >/dev/null; then ok "session-manager-plugin"
+  else warn "session-manager-plugin missing (needed by connect/test): brew install --cask session-manager-plugin"; fi
+  gh auth status >/dev/null 2>&1 && ok "gh authenticated as $(gh api user -q .login)" || warn "gh not logged in (needed only to ingest GitHub): gh auth login"
+
+  say "AWS ($REGION)"
+  local arn
+  arn="$(aws sts get-caller-identity --query Arn --output text 2>/dev/null)" \
+    || die "AWS credentials missing or expired — run: aws sso login"
+  ok "logged in as ${arn##*/}"
+
+  say "Bedrock models"
+  local embed="amazon.titan-embed-text-v2:0" extract
+  extract="$(detect_extraction_model)"
+  [[ -n "$extract" ]] || warn "no invocable Claude model found in $REGION — LLM extraction will be off (deterministic extraction and search still work)"
+  "$(python_bin)" - "$embed" "$extract" <<'PY'
+import json, sys, boto3
+from aquifer.semantic.failures import classify_extraction_error
+embed, extract = sys.argv[1:3]
+rt = boto3.client("bedrock-runtime")
+
+def explain(label, model, exc):
+    f = classify_extraction_error(exc)
+    sys.exit(f"  \033[31m✗ {label} {model}: {f.code}\n    {f.message}\033[0m")
+
+try:
+    rt.invoke_model(modelId=embed, body=json.dumps({"inputText": "aquifer check", "dimensions": 256}))
+    print(f"  \033[32m✓\033[0m embedding model {embed} invocable", file=sys.stderr)
+except Exception as e:
+    explain("embedding model", embed, e)
+if extract:
+    try:
+        rt.converse(modelId=extract, messages=[{"role": "user", "content": [{"text": "Reply OK"}]}],
+                    inferenceConfig={"maxTokens": 5})
+        print(f"  \033[32m✓\033[0m extraction model {extract} invocable", file=sys.stderr)
+    except Exception as e:
+        explain("extraction model", extract, e)
+PY
+  echo "EXTRACTION_MODEL=$extract"
+}
+
+detect_extraction_model() {
+  if [[ -n "${AQUIFER_EXTRACTION_MODEL+x}" ]]; then echo "${AQUIFER_EXTRACTION_MODEL}"; return; fi
+  # Prefer a regional (eu./us./...) Claude inference profile; Haiku first (a third of Sonnet's
+  # price per document, see docs/cost.md), newest first; return the first one this account can invoke.
+  "$(python_bin)" - <<'PY'
+import re, sys, boto3
+br, rt = boto3.client("bedrock"), boto3.client("bedrock-runtime")
+ids = [p["inferenceProfileId"] for p in br.list_inference_profiles(typeEquals="SYSTEM_DEFINED")
+       ["inferenceProfileSummaries"] if p["status"] == "ACTIVE" and "anthropic.claude" in p["inferenceProfileId"]]
+def version(i):
+    name = re.sub(r"-\d{8}.*$|-v\d+(:\d+)?$", "", i.split("anthropic.", 1)[1])
+    return [int(x) for x in re.findall(r"\d+", name)]
+def rank(i):
+    family = 0 if "haiku" in i else 1 if "sonnet" in i else 2
+    v = version(i)
+    return (i.startswith("global."), family, not v, [-x for x in (v + [0, 0, 0])[:3]])
+for model in sorted(ids, key=rank):
+    if "haiku" in model and version(model)[:1] and version(model)[0] < 4:
+        continue  # older Haiku models extract relationships noticeably worse
+    try:
+        rt.converse(modelId=model, messages=[{"role": "user", "content": [{"text": "Reply OK"}]}],
+                    inferenceConfig={"maxTokens": 5})
+    except Exception as e:
+        print(f"  skip {model}: {type(e).__name__}", file=sys.stderr)
+        continue
+    print(model)
+    break
+PY
+}
+
+# --- seed / configure --------------------------------------------------------------------------
+
+cmd_seed() {
+  say "seeding private GitHub test repositories"; mkdir -p "$BUILD"
+  "$HERE/scripts/seed-github-repos.sh" "${1:-}" "${2:-aquifer-test}" > "$BUILD/repos.json"
+  cat "$BUILD/repos.json"
+}
+
+cmd_configure() {
+  mkdir -p "$BUILD"
+  local repos="${AQUIFER_REPOS:-}" model
+  if [[ -z "$repos" && -f "$BUILD/repos.json" ]]; then repos="$(cat "$BUILD/repos.json")"; fi
+  [[ -n "$repos" ]] || repos="[]"
+  model="$(detect_extraction_model)"
+  [[ -n "$model" ]] || warn "LLM extraction off (no invocable Claude model); set AQUIFER_EXTRACTION_MODEL to choose one"
+  cat > "$HERE/terraform.tfvars" <<EOF
+# Written by ./aquifer-aws configure — edit freely, then ./aquifer-aws deploy.
+name                = "$NAME"
+region              = "$REGION"
+repos               = $repos
+extraction_model_id = "$model"
+# instance_type       = "t4g.small"   # t4g.micro (~5k chunks), t4g.medium (~100k chunks)
+# domain              = ""            # set for public HTTPS (A record → public_ip output)
+EOF
+  ok "wrote terraform.tfvars"
+  cat "$HERE/terraform.tfvars" >&2
+}
+
+# --- build / plan / up -------------------------------------------------------------------------
+
+cmd_build() {
+  say "building the aquifer wheel"
+  rm -rf "$BUILD/dist" && mkdir -p "$BUILD/dist"
+  "$(python_bin)" -m pip wheel -q --no-deps -w "$BUILD/dist" "$ROOT"
+  ok "$(ls "$BUILD"/dist/*.whl | xargs -n1 basename)"
+}
+
+wheel_var() { echo "-var=wheel_path=.build/dist/$(ls "$BUILD"/dist/*.whl | xargs -n1 basename)"; }
+
+cmd_plan() {
+  [[ -f "$HERE/terraform.tfvars" ]] || cmd_configure
+  cmd_build
+  say "terraform plan (nothing is created)"
+  "${TF[@]}" init -input=false -upgrade >/dev/null
+  "${TF[@]}" plan -input=false -out="$BUILD/plan.tfplan" "$(wheel_var)"
+  "${TF[@]}" show -json "$BUILD/plan.tfplan" | "$(python_bin)" -c '
+import json, sys, collections
+plan = json.load(sys.stdin)
+counts = collections.Counter(rc["type"] for rc in plan.get("resource_changes", [])
+                             if "create" in rc["change"]["actions"])
+print("\nResources to create:", file=sys.stderr)
+for t, n in sorted(counts.items()):
+    print(f"  {n:3d}  {t}", file=sys.stderr)
+print(f"  ---\n  {sum(counts.values()):3d}  total", file=sys.stderr)
+print("\nBaseline cost: ~$20/month in eu-west-1 (t4g.small); model usage is extra. See docs/cost.md.", file=sys.stderr)
+'
+  ok "plan saved — './aquifer-aws up' applies exactly this plan"
+}
+
+store_github_token() {
+  local repos; repos="$("${TF[@]}" output -json repos)"
+  [[ "$repos" == "[]" ]] && return 0
+  say "storing the GitHub token (from gh) in SSM Parameter Store — never in Terraform state"
+  # A 0600 temp file, so the value never appears in argv or the shell history.
+  local tok; tok="$(mktemp)"; chmod 600 "$tok"
+  printf '%s' "$(gh auth token)" > "$tok"
+  aws ssm put-parameter --name "$(tfout ssm_prefix)/github-token" --type SecureString \
+    --overwrite --value "file://$tok" >/dev/null
+  rm -f "$tok"
+  ok "github token stored"
+}
+
+cmd_up() {
+  [[ -f "$BUILD/plan.tfplan" ]] || cmd_plan
+  say "terraform apply"
+  "${TF[@]}" apply -input=false "$BUILD/plan.tfplan"
+  rm -f "$BUILD/plan.tfplan"
+  store_github_token
+  wait_ready
+  cmd_sync
+  cmd_status
+  echo "MCP_URL=$(tfout mcp_url)"
+}
+
+cmd_deploy() {
+  cmd_build
+  say "terraform apply (code and configuration)"
+  "${TF[@]}" apply -input=false -auto-approve "$(wheel_var)"
+  say "rolling out on the server"
+  remote "/opt/aquifer/bin/aquifer-update" | tail -3 >&2
+  ok "deployed"
+}
+
+cmd_github_token() {
+  store_github_token
+  say "restarting the service so it reads the new token immediately"
+  remote "systemctl restart aquifer && sleep 3 && curl -fsS http://127.0.0.1:8080/healthz" >/dev/null
+  cmd_sync
+}
+
+# --- sync / status -----------------------------------------------------------------------------
+
+cmd_sync() {
+  say "running discovery now${1:+ ($1)}"
+  aq sync ${1:-} >&2
+  say "waiting for the queue to drain"
+  local idle=0 out pending running dead
+  for _ in $(seq 1 180); do
+    out="$(aq status --json)"
+    read -r pending running dead < <("$(python_bin)" -c '
+import json, sys
+q = json.loads(sys.stdin.read())["queue"]
+print(sum(q.get("pending", {}).values()), sum(q.get("running", {}).values()), sum(q.get("dead", {}).values()))' <<<"$out")
+    printf '  %s pending, %s running, %s dead letters   \r' "$pending" "$running" "$dead" >&2
+    if [[ "$pending" == "0" && "$running" == "0" ]]; then
+      idle=$((idle + 1)); [[ $idle -ge 2 ]] && break
+    else idle=0; fi
+    sleep 5
+  done
+  echo >&2
+  [[ "$pending" == "0" && "$running" == "0" ]] && ok "queue drained" || warn "queue still busy — check ./aquifer-aws status"
+  [[ "$dead" == "0" ]] || warn "$dead job(s) in dead letters — see ./aquifer-aws status"
+  "$(python_bin)" -c '
+import json, sys
+s = json.loads(sys.stdin.read())["sync"]
+if s.get("last_error"):
+    print("  ! last discovery error:", s["last_error"]["error"], file=sys.stderr); sys.exit(1)' <<<"$out"
+}
+
+cmd_status() {
+  say "deployment ($REGION)"
+  "${TF[@]}" output 2>/dev/null || die "nothing deployed"
+  say "server"
+  aq status >&2
+}
+
+cmd_retry_failed() { aq retry-failed >&2; cmd_sync; }
+
+cmd_metrics() {
+  remote 'echo "memory: $(free -m | awk "/Mem:/ {print \$3\" MiB used of \"\$2\" MiB\"}")"
+echo "aquifer process: $(ps -o rss=,pcpu= -C aquifer -C python3.12 | awk "{r+=\$1; c+=\$2} END {printf \"%d MiB RSS, %.1f%% CPU\", r/1024, c}")"
+echo "load: $(cut -d" " -f1-3 /proc/loadavg)"
+echo "data volume: $(df -h /var/lib/aquifer | awk "NR==2 {print \$3\" used of \"\$2}")"
+ls -la /var/lib/aquifer | awk "/\\.db/ {print \"  \"\$9\": \"\$5\" bytes\"}"
+echo "log size: $(du -sh /var/log/aquifer | cut -f1)"'
+}
+
+# --- connect / test ----------------------------------------------------------------------------
+
+mcp_token() {
+  aws ssm get-parameter --name "$(tfout ssm_prefix)/mcp-tokens" --with-decryption \
+    --query Parameter.Value --output text | "$(python_bin)" -c 'import json,sys; print(json.load(sys.stdin)["default"])'
+}
+
+cmd_token() { mcp_token; }
+
+start_forward() {
+  command -v session-manager-plugin >/dev/null \
+    || die "install the AWS Session Manager plugin: brew install --cask session-manager-plugin"
+  if nc -z 127.0.0.1 "$PORT" 2>/dev/null; then return 0; fi
+  mkdir -p "$BUILD"
+  aws ssm start-session --target "$(tfout instance_id)" \
+    --document-name AWS-StartPortForwardingSession \
+    --parameters "{\"portNumber\":[\"8080\"],\"localPortNumber\":[\"$PORT\"]}" \
+    > "$BUILD/forward.log" 2>&1 &
+  echo $! > "$BUILD/forward.pid"
+  for _ in $(seq 1 30); do nc -z 127.0.0.1 "$PORT" 2>/dev/null && return 0; sleep 1; done
+  cat "$BUILD/forward.log" >&2; die "port forward did not start"
+}
+
+stop_forward() {
+  if [[ -f "$BUILD/forward.pid" ]]; then
+    local pid; pid="$(cat "$BUILD/forward.pid")"
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+  rm -f "$BUILD/forward.pid"
+}
+
+mcp_base() {
+  local url; url="$(tfout mcp_url)"
+  if [[ "$url" == https://* ]]; then echo "$url"; else start_forward; echo "http://127.0.0.1:$PORT/mcp"; fi
+}
+
+cmd_connect() {
+  local url; url="$(mcp_base)"
+  ok "MCP endpoint: $url"
+  [[ "$url" == http://127.0.0.1* ]] && ok "tunnel running in the background (stop: kill \$(cat $BUILD/forward.pid))"
+  cat >&2 <<EOF
+
+Connect Claude Code (the token is read from SSM at run time, not stored in the command):
+  claude mcp add --transport http aquifer $url --header "Authorization: Bearer \$($HERE/aquifer-aws token)"
+
+Then ask: "What depends on billing-api, and where is that defined?"
+EOF
+  echo "MCP_URL=$url"
+}
+
+cmd_test() {
+  local py; py="$(python_bin)"
+  local url; url="$(mcp_base)"
+  trap stop_forward EXIT
+  local repos expect_llm=()
+  repos="$("${TF[@]}" output -json repos | "$py" -c 'import json,sys; print(" ".join(json.load(sys.stdin)))')"
+  [[ -n "$repos" ]] || die "no repositories configured"
+  if [[ "${AQUIFER_SKIP_LLM:-}" != "1" ]] && grep -Eq 'extraction_model_id *= *"[^"]+"' "$HERE/terraform.tfvars" 2>/dev/null; then expect_llm=(--expect-llm); fi
+
+  say "end-to-end MCP checks"
+  # shellcheck disable=SC2086
+  "$py" "$HERE/tests/e2e.py" --url "$url" --token "$(mcp_token)" \
+    --repos $repos ${expect_llm[@]+"${expect_llm[@]}"} "$@" --json-out "$BUILD/e2e-report.json"
+
+  say "idempotency: a second full sync must re-index nothing"
+  local log=/var/log/aquifer/aquifer.log before n
+  before="$(aq status --json | "$py" -c 'import json,sys; print(json.load(sys.stdin)["index"]["chunks"])')"
+  n="$(remote "grep -c job_processed $log || true" | tr -dc 0-9)"
+  cmd_sync --full
+  local summary after
+  summary="$(remote "grep job_processed $log | tail -n +$((n + 1))" | "$py" -c '
+import json, re, sys, collections
+t = collections.Counter()
+for line in sys.stdin:
+    m = re.search(r"\{.*\}", line)
+    if m:
+        e = json.loads(m.group(0)); t["jobs"] += 1
+        for k in ("fetched", "indexed", "skipped", "failed", "deleted"):
+            t[k] += e.get(k, 0)
+print(json.dumps(dict(t)))')"
+  after="$(aq status --json | "$py" -c 'import json,sys; print(json.load(sys.stdin)["index"]["chunks"])')"
+  echo "  $summary   chunks before=$before after=$after" >&2
+  if "$py" -c "import json,sys; s=json.loads(sys.argv[1]); sys.exit(0 if s.get('jobs',0)>0 and s.get('indexed',0)==0 and s.get('failed',0)==0 else 1)" "$summary" \
+     && [[ "$before" == "$after" ]]; then
+    ok "nothing re-indexed: unchanged documents skipped (no Bedrock calls)"
+  else
+    warn "documents were re-indexed or the sync did not run — check ./aquifer-aws logs 10"
+    return 1
+  fi
+  ok "report: $BUILD/e2e-report.json"
+}
+
+gh_file() {
+  # gh_file get|put|delete REPO PATH [MESSAGE] [CONTENT_FILE] — GitHub Contents API (one commit per call).
+  local op="$1" repo="$2" path="$3" msg="${4:-}" file="${5:-}" sha
+  sha="$(gh api "repos/$repo/contents/$path" -q .sha 2>/dev/null || true)"
+  case "$op" in
+    get) gh api "repos/$repo/contents/$path" -q .content | base64 -d ;;
+    put) gh api -X PUT "repos/$repo/contents/$path" -f message="$msg" \
+           -f content="$(base64 < "$file" | tr -d '\n')" ${sha:+-f sha="$sha"} -q .commit.sha >/dev/null ;;
+    delete) gh api -X DELETE "repos/$repo/contents/$path" -f message="$msg" -f sha="$sha" >/dev/null ;;
+  esac
+}
+
+cmd_test_updates() {
+  local payments; payments="$("${TF[@]}" output -json repos | "$(python_bin)" -c 'import json,sys; print(json.load(sys.stdin)[0])')"
+  local work; work="$(mktemp -d)"
+  local compose="docker-compose.yml" adr="docs/adr/0007-ledger-on-postgres.md"
+  gh_file get "$payments" "$compose" > "$work/compose.orig"
+  gh_file get "$payments" "$adr" > "$work/adr.orig"
+  say "committing a change (redis → valkey) and deleting the ADR in $payments"
+  sed 's/      - redis/      - valkey/' "$work/compose.orig" > "$work/compose.new"
+  gh_file put "$payments" "$compose" "test: replace redis with valkey" "$work/compose.new"
+  gh_file delete "$payments" "$adr" "test: delete an ADR"
+  local rc=0
+  ( cmd_sync && "$(python_bin)" "$HERE/tests/e2e.py" --url "$(mcp_base)" --token "$(mcp_token)" \
+      --repos $("${TF[@]}" output -json repos | "$(python_bin)" -c 'import json,sys; print(" ".join(json.load(sys.stdin)))') \
+      --after-mutation --json-out "$BUILD/e2e-updates.json" ) || rc=$?
+  stop_forward
+  say "restoring the original files"
+  gh_file put "$payments" "$compose" "test: restore $compose" "$work/compose.orig" \
+    && gh_file put "$payments" "$adr" "test: restore $adr" "$work/adr.orig" \
+    || warn "restore failed — restore $compose and $adr in $payments manually"
+  cmd_sync || rc=$?
+  rm -rf "$work"
+  return $rc
+}
+
+# --- logs / maintenance / down -------------------------------------------------------------------
+
+cmd_logs() { aws logs tail "$(tfout log_group)" --since "${1:-30}m" --format short; }
+
+cmd_run() { aq "$@" >&2; }
+
+cmd_upgrade_os() {
+  confirm "Apply OS updates and reboot the server (queries unavailable for ~1 minute)?" || die "aborted"
+  remote "dnf upgrade -y -q --releasever=latest && (sleep 2; systemctl reboot) >/dev/null 2>&1 &" >&2 || true
+  sleep 30; wait_ready
+}
+
+cmd_down() {
+  say "this destroys every resource of '$NAME' in $REGION — the index, its snapshots' schedule and the server"
+  warn "existing EBS snapshots are kept (delete them in the console if you no longer need them)"
+  confirm "Destroy?" || die "aborted"
+  stop_forward
+  local prefix; prefix="$(tfout ssm_prefix || echo "/aquifer/$NAME")"
+  "${TF[@]}" destroy -input=false -auto-approve "-var=wheel_path=$(ls "$BUILD"/dist/*.whl 2>/dev/null | head -1 | sed "s#$HERE/##" || echo .build/dist/none.whl)"
+  say "deleting SSM parameters under $prefix (GitHub token, MCP tokens, source credentials)"
+  local names
+  names="$(aws ssm get-parameters-by-path --path "$prefix" --recursive --query 'Parameters[].Name' --output text)"
+  for n in $names; do aws ssm delete-parameter --name "$n" && ok "deleted $n"; done
+  ok "destroyed. Seeded test repos (if any) remain on GitHub: gh repo delete <owner>/aquifer-test-<name> --yes"
+}
+
+main() {
+  local cmd="${1:-help}"; shift || true
+  case "$cmd" in
+    check) cmd_check ;;
+    seed) cmd_seed "$@" ;;
+    configure) cmd_configure ;;
+    build) cmd_build ;;
+    plan) cmd_plan ;;
+    up) cmd_up ;;
+    deploy) cmd_deploy ;;
+    sync) cmd_sync "$@" ;;
+    status) cmd_status ;;
+    retry-failed) cmd_retry_failed ;;
+    github-token) cmd_github_token ;;
+    connect) cmd_connect ;;
+    token) cmd_token ;;
+    test) cmd_test "$@" ;;
+    test-updates) cmd_test_updates ;;
+    metrics) cmd_metrics ;;
+    logs) cmd_logs "$@" ;;
+    run) cmd_run "$@" ;;
+    upgrade-os) cmd_upgrade_os ;;
+    down) cmd_down ;;
+    *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' ;;
+  esac
+}
+
+main "$@"

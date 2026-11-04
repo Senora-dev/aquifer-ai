@@ -21,7 +21,6 @@ from aquifer.core.models import IndexedState, SearchResult
 from aquifer.vectorstore.schema import (
     DATE_FIELDS,
     FILTERABLE_FIELDS,
-    chunk_rank,
     chunk_to_source,
     generation_rank,
     matches_filters,
@@ -75,12 +74,14 @@ class InMemoryVectorStore(VectorStore):
             self.delete_by_document(document_id)
             return
         self.upsert(chunks)
-        ours = chunk_rank(chunks[0])
         with self._lock:
-            for rid, rec in list(self._records.items()):
-                if (rec.get("document_id") == document_id
-                        and rec.get("generation") != chunks[0].generation
-                        and generation_rank(rec) < ours):
+            mine = [(rid, rec) for rid, rec in self._records.items()
+                    if rec.get("document_id") == document_id]
+            # Keep only the highest-ranked generation. This also removes our own write when a
+            # newer one landed first, so concurrent writers converge in any order.
+            best = max(generation_rank(rec) for _, rec in mine)
+            for rid, rec in mine:
+                if generation_rank(rec) < best:
                     del self._records[rid]
             self._save()
 

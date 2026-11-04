@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end checks against a deployed Aquifer, through a real MCP client.
 
-Run by ``./aquifer-test test`` (which opens the SSM port forward and passes the URL, token
+Run by ``./aquifer-aws test`` (which opens the SSM port forward and passes the URL, token
 and repositories). Prints one line per check and a JSON summary; exits non-zero on failure.
 
     python e2e.py --url http://127.0.0.1:18080/mcp --token ... \

@@ -5,10 +5,6 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.6"
-    }
   }
 }
 
@@ -25,13 +21,12 @@ provider "aws" {
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
-data "aws_availability_zones" "available" {
-  state = "available"
-}
 
 locals {
-  account = data.aws_caller_identity.current.account_id
-  region  = var.region
-  azs     = slice(data.aws_availability_zones.available.names, 0, 2)
-  build   = "${path.module}/.build"
+  account   = data.aws_caller_identity.current.account_id
+  partition = data.aws_partition.current.partition
+  region    = var.region
+  # Every SSM parameter of this deployment lives under this path (config, GitHub token, MCP
+  # tokens, MCP source credentials). `./aquifer-aws down` removes the path.
+  ssm_prefix = "/aquifer/${var.name}"
 }

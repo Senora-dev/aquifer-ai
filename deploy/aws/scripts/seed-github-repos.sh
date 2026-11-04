@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Create private GitHub test repositories from the synthetic demo data (idempotent).
 #
-#   deploy/terraform/scripts/seed-github-repos.sh [owner] [prefix]
+#   deploy/aws/scripts/seed-github-repos.sh [owner] [prefix]
 #
 # Creates <prefix>-payments, <prefix>-platform and <prefix>-legacy-billing under <owner>
 # (default: the gh CLI user, prefix "aquifer-test"), pushes the demo files, and opens real
