@@ -3,6 +3,41 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — MCP Integrator
+
+### Added
+- **MCP Integrator** (`aquifer sources …`, docs/integrator.md): connects to external MCP
+  servers and imports their content into the shared pipeline on a schedule.
+  - Providers: preconfigured ones (GitHub verified end to end; Atlassian, Linear, Notion,
+    Sentry, Slack with auth metadata verified) or any URL.
+  - Auth: bearer tokens, or OAuth 2.1 with PKCE and dynamic registration. Tokens are refreshed
+    unattended; failures surface as `needs_reauth`.
+  - Plans: from provider templates, or derived deterministically from one sample call
+    (`propose`). `preview` shows sample documents, coverage and who can read the content.
+  - Runs: page-by-page jobs with checkpoints, rate-limit postponement, retries and dead
+    letters.
+  - Deletions: only from complete listings, confirmed per item by the source.
+  - Provenance in `get_document` (`imported_via`); sources and their coverage in
+    `list_sources`.
+- Safety: read-only gate (annotations and tool names), approved-tools enforcement at call
+  time, private-network guard (also for OAuth endpoints), sanitized remote text, 5 MB result
+  limit.
+- Setup asks for a server size: `small` ~$19, `medium` ~$33, or `large` ~$62 (flagged above
+  the $50 budget, confirmation required). Agents pass `AQUIFER_SIZE`; `./aquifer-aws resize
+  SIZE` changes it in place, growing the data volume and filesystem.
+- `aquifer-aws`: `sources`, `source-token`, `authorize`, `test-integrator`. The seed script
+  enables discussions.
+- Document kinds `ticket`, `page`, `release`, `message`, `record`; source type `mcp`; extraction
+  prompts for release notes, tickets and pages.
+
+### Fixed
+- OAuth requested the scopes the server advertised (Linear: `read write`) instead of the
+  configured least-privilege scope (`read`). Registration and authorization now keep the
+  configured scope.
+- A paused source's (or a disabled scope's) documents could have been readable when no GitHub
+  repositories were configured; the scope guard now denies everything when sources are managed
+  and none is enabled.
+
 ## [Unreleased] — Affordable single-server deployment
 
 The default deployment now costs **about $20 a month** (eu-west-1, before model usage) instead

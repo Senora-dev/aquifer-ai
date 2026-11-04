@@ -94,6 +94,14 @@ def cmd_serve(args) -> int:  # noqa: ANN001
         logging.getLogger("aquifer").error("refusing to start: %s", exc)
         return 2
     service = NodeService(settings)
+    if settings.integrator.enabled:
+        from aquifer.integrator import jobs as integrator_jobs
+        from aquifer.integrator.web import oauth_callback_app
+
+        integrator_jobs.register()
+        tools.extra_sources = integrator_jobs.sources_provider(settings)
+        app = oauth_callback_app(app, lambda: integrator_jobs.registry_for(settings),
+                                 max_age_s=settings.integrator.authorize_timeout_s + 60)
     if not args.no_workers:
         service.start()
     import uvicorn
@@ -182,6 +190,10 @@ def collect_status(settings) -> dict:  # noqa: ANN001
         },
         "repositories": dict(store.facet("repo", None, size=1000) or []),
     }
+    if settings.integrator.enabled:
+        from aquifer.integrator.status import sources_status
+
+        out["mcp_sources"] = sources_status(settings, queue)
     return out
 
 
@@ -206,6 +218,11 @@ def cmd_status(args) -> int:  # noqa: ANN001
     ext = status["extraction"]
     print(f"extraction {ext['by_status']}" + (f" errors {ext['by_error']}"
                                               if ext["by_error"] else ""))
+    for s in status.get("mcp_sources", []):
+        last = s.get("last_run") or {}
+        print(f"source     {s['name']} [{s['state']}] last success "
+              f"{s.get('last_success') or 'never'}; last run {last.get('status', '-')}"
+              + (f" — {s['action']}" if s.get("action") else ""))
     for d in status["dead_letters"]:
         print(f"dead       #{d['id']} {d['summary']} after {d['attempts']} attempts: "
               f"{d['error']}")
@@ -232,6 +249,9 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("dead-letters", help="list or requeue jobs that exhausted retries")
     p.add_argument("--requeue", metavar="ID|all")
     p.set_defaults(fn=cmd_dead_letters)
+    from aquifer.integrator.cli import add_commands
+
+    add_commands(sub)
     args = parser.parse_args(argv)
     load_env_file(args.env_file)
     sys.exit(args.fn(args) or 0)

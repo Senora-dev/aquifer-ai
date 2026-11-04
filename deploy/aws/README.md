@@ -52,11 +52,31 @@ of Sonnet per document and scored as well as Sonnet in the retrieval benchmark. 
 To try Aquifer without your own repositories, run `./aquifer-aws seed` before `configure`. It
 creates three private GitHub repositories with synthetic data, issues and pull requests.
 
+## Choosing a size
+
+`configure` asks for a size. Agents and scripts pass `AQUIFER_SIZE=small|medium|large`; without
+it, a non-interactive run uses `small`.
+
+| Size | Server | Data volume | Baseline / month (eu-west-1) | Fits |
+| --- | --- | --- | --- | --- |
+| `small` (default) | t4g.small, 2 GiB | 10 GiB | ~$19 | up to ~50 repositories / ~5,000 documents (~25,000 chunks; measured: 22 ms search) |
+| `medium` | t4g.medium, 4 GiB | 20 GiB | ~$33 | up to ~200 repositories / ~20,000 documents (~100,000 chunks; estimated from measured memory use) |
+| `large` | t4g.large, 8 GiB | 40 GiB | ~$62, **above the $50/month budget**: confirmation required | more than that (estimated) |
+
+`./aquifer-aws resize SIZE` changes the size in place. The server restarts, so there are about
+1–2 minutes without queries. The index is kept, and the data volume grows but never shrinks.
+Beyond `large`, use the scale profile ([docs/deployment.md](../../docs/deployment.md)).
+
+The server is a plain EC2 instance running Aquifer under systemd. It does not use ECS: Fargate
+would need a load balancer or public IPs, plus EFS for the index, which would add ~$20–30/month
+for one always-on process. The same image (`Dockerfile.server`) can run on an existing ECS or
+Kubernetes cluster with a persistent volume, but that path is not automated or tested.
+
 ## What gets created (23 resources)
 
 | Area | Resources | Monthly cost (eu-west-1) |
 | --- | --- | --- |
-| Server | EC2 t4g.small, CPU credits `standard`, IMDSv2, automatic recovery | $13.43 |
+| Server | EC2 t4g.small (`small`; see [sizes](#choosing-a-size)), CPU credits `standard`, IMDSv2, automatic recovery | $13.43 |
 | Storage | 8 GiB root + 10 GiB data volume (gp3, encrypted) | $1.58 |
 | Address | 1 Elastic IP (egress without NAT; stable address) | $3.65 |
 | Backups | Data Lifecycle Manager policy: daily snapshot at 03:00 UTC, 7 kept | ≤ $0.50 |
@@ -88,6 +108,21 @@ Secrets are never in Terraform state:
 | `./aquifer-aws down` | Destroy everything and delete `/aquifer/<name>/*` from SSM. Existing snapshots are kept |
 
 Server-side commands run through SSM Run Command, so no SSH and no open ports are needed.
+
+### Connecting other tools (MCP Integrator)
+
+```bash
+./aquifer-aws source-token eng-github --from-gh        # a token, laptop → SSM (never argv)
+./aquifer-aws sources add eng-github --provider github --token-ref ssm:/aquifer/<name>/sources/eng-github/token
+./aquifer-aws sources template eng-github --stream discussions --target your-org/your-repo
+./aquifer-aws sources preview eng-github && ./aquifer-aws sources enable eng-github
+./aquifer-aws authorize <oauth-source>                 # OAuth providers: tunnel + browser
+./aquifer-aws sources status
+./aquifer-aws test-integrator                          # e2e against GitHub's MCP server
+```
+
+Walkthrough, providers, coverage and safety: [docs/integrator.md](../../docs/integrator.md).
+Source credentials live under `/aquifer/<name>/sources/` in SSM and are removed by `down`.
 
 ### Exposing MCP over HTTPS (optional)
 
@@ -129,6 +164,14 @@ which validates access end to end. Revoke the old token on GitHub afterwards.
 ./aquifer-aws test-updates  # commits a change and a deletion to GitHub, re-syncs, verifies, reverts
 ```
 
+`./aquifer-aws test-integrator` runs the full MCP Integrator check against GitHub's MCP server:
+- import, retrieval, unchanged runs, updates and deletions
+- retries during an injected network fault
+- recovery after `kill -9` mid-run
+
+Its mutations go only to a dedicated fixture repository (see
+[docs/integrator.md](../../docs/integrator.md#test-fixtures)).
+
 `test` and `test-updates` expect the synthetic repositories created by `./aquifer-aws seed`; the
 checks look for their content. Reports go to `.build/e2e-report.json` and
 `.build/e2e-updates.json`.
@@ -146,8 +189,9 @@ checks look for their content. Reports go to `.build/e2e-report.json` and
 
 ## For AI agents
 
-Follow the steps above. Rules:
-- Run `plan` and show the user the resource list and cost before `up`.
-- Never run `down` unless the user asks.
-- If `check` reports expired AWS credentials, ask the user to run `aws sso login`.
-- Every command prints `==>` headings, `✓`/`✗` results and `KEY=value` lines.
+Follow the agent runbook in [AGENTS.md](../../AGENTS.md#setting-aquifer-up-for-a-user-agent-runbook).
+It lists:
+- the decisions to ask the user about: repositories, tools, and shared access
+- the points where you must stop: AWS login, Bedrock console access, cost approval, OAuth
+  clicks (relay `AUTH_URL=`), and preview approval
+- what "done" means, and how to handle common errors

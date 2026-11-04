@@ -73,6 +73,8 @@ aws ssm get-parameter --region "$REGION" --name "$SSM_PREFIX/config" \
   --query Parameter.Value --output text > /etc/aquifer/aquifer.env.new
 install -m 640 -o root -g aquifer /etc/aquifer/aquifer.env.new /etc/aquifer/aquifer.env
 rm -f /etc/aquifer/aquifer.env.new
+# After `aquifer-aws resize` grows the data volume: grow the filesystem online (no-op otherwise).
+resize2fs /dev/disk/by-label/aquifer-data >/dev/null 2>&1 || true
 systemctl daemon-reload
 systemctl restart aquifer
 for _ in $(seq 1 60); do

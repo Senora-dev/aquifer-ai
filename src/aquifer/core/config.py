@@ -227,6 +227,32 @@ class NodeSettings(_Base):
     job_lease_s: int = 1800
 
 
+class IntegratorSettings(_Base):
+    """The built-in MCP Integrator (single-server profile): imports content from external MCP
+    servers into the index. Sources are configured at run time with `aquifer sources`."""
+
+    enabled: bool = True
+    # Base URL a browser reaches this server on, for OAuth redirects
+    # (`<public_url>/oauth/callback`). Default: the SSM tunnel / local port.
+    public_url: str = "http://127.0.0.1:18080"
+    # Refuse source URLs (and OAuth endpoints) on private, loopback or link-local addresses
+    # unless explicitly allowed (internal MCP servers).
+    allow_private_networks: bool = False
+    # Where source credentials are stored: a secret-reference prefix. "" = a 0600 file under
+    # node.data_dir/credentials. The AWS profile uses "ssm:/aquifer/<name>/sources".
+    credentials_prefix: str = ""
+    default_schedule_hours: int = 24
+    # How long an OAuth authorization waits for the browser redirect.
+    authorize_timeout_s: int = 900
+    # Incremental streams (ordered by update time) re-list everything every Nth run so items
+    # deleted at the source can still be detected.
+    full_listing_every_runs: int = 7
+    # Items updated up to this long before the previous high-water mark are re-checked.
+    overlap_s: int = 300
+    # Pause between page calls to one source (seconds): a simple, polite rate guard.
+    min_call_interval_s: float = 0.2
+
+
 class Settings(_Base):
     """Top-level settings, composed from the grouped sections above."""
 
@@ -240,6 +266,7 @@ class Settings(_Base):
     semantic_index: SemanticIndexSettings = Field(default_factory=SemanticIndexSettings)
     mcp: McpSettings = Field(default_factory=McpSettings)
     node: NodeSettings = Field(default_factory=NodeSettings)
+    integrator: IntegratorSettings = Field(default_factory=IntegratorSettings)
 
     # Dotted import paths of Interceptor implementations to load, in order.
     # OSS default is empty (pass-through). Enterprise sets e.g.

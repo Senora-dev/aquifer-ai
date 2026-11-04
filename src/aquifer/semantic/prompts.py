@@ -221,6 +221,26 @@ _JIRA_TASK = (
     "judgments."
 )
 
+_RELEASE = (
+    "These are release notes. They describe a CHANGE between versions, not the whole system: "
+    "report what the release adds (assertion added), removes or drops (removed) and only plans "
+    "(proposed). Extract the components, APIs, dependencies and versions named. Facts only — "
+    "no assessment of impact or risk."
+)
+
+_TICKET = (
+    "This is a work item (ticket/issue) from a project tool. Extract its key (e.g. 'PROJ-400'), "
+    "the services/components named, and factual links: part_of for a parent/epic, depends_on "
+    "for a stated blocker or dependency, references for related items. No priority or status "
+    "judgments."
+)
+
+_DOCUMENT = (
+    "This is a page or discussion from a team knowledge tool. Extract the services, components, "
+    "datastores, teams and tickets named, and the relationships the text states. Decisions and "
+    "proposals keep their assertion (proposed / discussed). Facts only."
+)
+
 _GENERIC = (
     "Extract the named entities (services, components, datastores, tickets, systems) and the "
     "factual relationships between them. Facts only — no judgments, conclusions, or verdicts."
@@ -285,6 +305,16 @@ def default_registry() -> PromptRegistry:
     )
     # Per-source default for any other GitHub kind (e.g. raw code files): treat as code.
     registry.register(PromptTemplate("github", _GITHUB_CODE), source_type=SourceType.GITHUB)
+
+    # Content imported from external MCP servers, by kind.
+    for kind, template in ((DocumentKind.RELEASE, PromptTemplate("mcp-release", _RELEASE)),
+                           (DocumentKind.TICKET, PromptTemplate("mcp-ticket", _TICKET)),
+                           (DocumentKind.ISSUE, PromptTemplate("mcp-ticket", _TICKET)),
+                           (DocumentKind.PR, PromptTemplate("mcp-change", _GITHUB_CODE)),
+                           (DocumentKind.PAGE, PromptTemplate("mcp-document", _DOCUMENT)),
+                           (DocumentKind.DISCUSSION, PromptTemplate("mcp-document", _DOCUMENT)),
+                           (DocumentKind.MESSAGE, PromptTemplate("mcp-document", _DOCUMENT))):
+        registry.register(template, source_type=SourceType.MCP, kind=kind)
 
     # Jira: registered at the source level so every Jira kind uses task-oriented extraction.
     registry.register(PromptTemplate("jira-task", _JIRA_TASK), source_type=SourceType.JIRA)

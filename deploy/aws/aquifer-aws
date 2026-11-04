@@ -7,6 +7,7 @@
 #   ./aquifer-aws plan            build the wheel + terraform plan (creates nothing)
 #   ./aquifer-aws up              apply that plan, store the GitHub token, wait for the first sync
 #   ./aquifer-aws deploy          rebuild and roll out code/configuration changes (no downtime for data)
+#   ./aquifer-aws resize SIZE     change the server size: small (~$19), medium (~$33), large (~$62)
 #   ./aquifer-aws sync [--full]   run discovery now and wait for the queue to drain
 #   ./aquifer-aws status          queue, last sync, index size, extraction backlog, dead letters
 #   ./aquifer-aws retry-failed    re-run extraction for documents that exhausted retries
@@ -15,9 +16,13 @@
 #   ./aquifer-aws token           print the MCP bearer token
 #   ./aquifer-aws test            end-to-end MCP checks (+ idempotency)
 #   ./aquifer-aws test-updates    commit a change + a deletion to GitHub, re-sync, verify, revert
+#   ./aquifer-aws test-integrator MCP Integrator e2e against GitHub's real MCP server
 #   ./aquifer-aws metrics         memory, CPU, disk and index size on the server
 #   ./aquifer-aws logs [minutes]  server logs from CloudWatch
 #   ./aquifer-aws run <cmd...>    run an `aquifer` CLI command on the server
+#   ./aquifer-aws sources <...>   MCP Integrator: `aquifer sources …` on the server
+#   ./aquifer-aws source-token N  store an MCP source's token in SSM (--from-gh, or stdin)
+#   ./aquifer-aws authorize N     OAuth for an MCP source (opens the tunnel, prints the URL)
 #   ./aquifer-aws upgrade-os      dnf upgrade + reboot (data volume is kept)
 #   ./aquifer-aws down            terraform destroy + delete this deployment's SSM parameters
 #
@@ -81,7 +86,11 @@ remote() {
   [[ "$status" == "Success" ]] || die "remote command $status"
 }
 
-aq() { remote "runuser -u aquifer -- /opt/aquifer/venv/bin/aquifer $*"; }
+aq() {
+  # Each argument is shell-quoted for the remote side (plans and arguments contain JSON).
+  local quoted; quoted="$(printf '%q ' "$@")"
+  remote "runuser -u aquifer -- /opt/aquifer/venv/bin/aquifer $quoted"
+}
 
 wait_ready() {
   say "waiting for the server to finish its first boot (installs Python and Aquifer, ~3 min)"
@@ -187,11 +196,59 @@ cmd_seed() {
   cat "$BUILD/repos.json"
 }
 
+# Server sizes. Monthly baseline = instance + 8 GiB root + data volume + Elastic IP + ~$0.50
+# snapshots/logs (eu-west-1 list prices, 730 h). Capacity: small is measured; medium and large
+# are estimated from measured memory use (~18 MiB per 1,000 chunks), not load-tested.
+size_spec() {
+  case "$1" in
+    small)  echo "t4g.small 10 19.16" ;;
+    medium) echo "t4g.medium 20 33.47" ;;
+    large)  echo "t4g.large 40 62.10" ;;
+    *) return 1 ;;
+  esac
+}
+
+size_table() {
+  cat >&2 <<'TABLE'
+  Server size (eu-west-1 baseline per month, before model usage):
+
+    small   t4g.small   2 GiB   ~$19/month   up to ~50 repositories / ~5,000 documents
+                                             (~25,000 chunks, measured: 22 ms search)
+    medium  t4g.medium  4 GiB   ~$33/month   up to ~200 repositories / ~20,000 documents
+                                             (~100,000 chunks, estimated)
+    large   t4g.large   8 GiB   ~$62/month   more than that (estimated) — ABOVE the $50/month
+                                             baseline budget
+  Beyond "large", use the scale profile (docs/deployment.md). Resize later: ./aquifer-aws resize SIZE
+TABLE
+}
+
+choose_size() {
+  local size="${AQUIFER_SIZE:-}"
+  if [[ -z "$size" ]]; then
+    if [[ -t 0 ]]; then
+      size_table
+      read -r -p "  Size [small/medium/large] (default small): " size
+      size="${size:-small}"
+    else
+      size=small
+      warn "AQUIFER_SIZE not set; using small. Agents: ask the user (see AGENTS.md) and pass AQUIFER_SIZE."
+    fi
+  fi
+  size_spec "$size" >/dev/null || die "unknown size '$size' (small, medium or large)"
+  if [[ "$size" == "large" ]]; then
+    warn "large costs ~\$62/month baseline — above the \$50/month budget"
+    confirm "Use large anyway?" || die "aborted; choose small or medium"
+  fi
+  echo "$size"
+}
+
 cmd_configure() {
   mkdir -p "$BUILD"
-  local repos="${AQUIFER_REPOS:-}" model
+  local repos="${AQUIFER_REPOS:-}" model size instance data_gb monthly
   if [[ -z "$repos" && -f "$BUILD/repos.json" ]]; then repos="$(cat "$BUILD/repos.json")"; fi
   [[ -n "$repos" ]] || repos="[]"
+  size="$(choose_size)"
+  read -r instance data_gb monthly < <(size_spec "$size")
   model="$(detect_extraction_model)"
   [[ -n "$model" ]] || warn "LLM extraction off (no invocable Claude model); set AQUIFER_EXTRACTION_MODEL to choose one"
   cat > "$HERE/terraform.tfvars" <<EOF
@@ -200,11 +257,50 @@ name                = "$NAME"
 region              = "$REGION"
 repos               = $repos
 extraction_model_id = "$model"
-# instance_type       = "t4g.small"   # t4g.micro (~5k chunks), t4g.medium (~100k chunks)
+# size: $size (~\$$monthly/month baseline). Change with: ./aquifer-aws resize small|medium|large
+instance_type       = "$instance"
+data_volume_gb      = $data_gb
 # domain              = ""            # set for public HTTPS (A record → public_ip output)
 EOF
   ok "wrote terraform.tfvars"
   cat "$HERE/terraform.tfvars" >&2
+  echo "SIZE=$size"
+  echo "MONTHLY_BASELINE_USD=$monthly"
+}
+
+cmd_resize() {
+  # resize SIZE: change the server size in place (about 1-2 minutes without queries; the index
+  # is kept). The data volume only grows; it is never shrunk.
+  local size="${1:-}"
+  [[ -n "$size" ]] || { size_table; die "usage: ./aquifer-aws resize small|medium|large"; }
+  size_spec "$size" >/dev/null || die "unknown size '$size'"
+  if [[ "$size" == "large" ]]; then
+    warn "large costs ~\$62/month baseline — above the \$50/month budget"
+    confirm "Resize to large anyway?" || die "aborted"
+  fi
+  local instance data_gb monthly current_gb
+  read -r instance data_gb monthly < <(size_spec "$size")
+  current_gb="$(sed -n 's/^data_volume_gb *= *\([0-9]*\).*/\1/p' "$HERE/terraform.tfvars")"
+  if (( ${current_gb:-0} > data_gb )); then data_gb="$current_gb"; fi
+  say "resizing to $size ($instance, data volume ${data_gb} GiB, ~\$$monthly/month)"
+  confirm "The server restarts (about 1-2 minutes without queries). Continue?" || die "aborted"
+  "$(python_bin)" - "$HERE/terraform.tfvars" "$instance" "$data_gb" "$size" "$monthly" <<'PY'
+import re, sys
+path, instance, gb, size, monthly = sys.argv[1:]
+text = open(path).read()
+text = re.sub(r'(?m)^#?\s*instance_type\s*=.*$', f'instance_type       = "{instance}"', text)
+if re.search(r'(?m)^data_volume_gb\s*=', text):
+    text = re.sub(r'(?m)^data_volume_gb\s*=.*$', f'data_volume_gb      = {gb}', text)
+else:
+    text += f'data_volume_gb      = {gb}\n'
+text = re.sub(r'(?m)^# size: .*$', f'# size: {size} (~${monthly}/month baseline). Change with: ./aquifer-aws resize small|medium|large', text)
+open(path, "w").write(text)
+PY
+  cmd_deploy
+  wait_ready
+  # EBS grows the block device; grow the ext4 filesystem on it too (online, no-op if unchanged).
+  remote "resize2fs /dev/disk/by-label/aquifer-data >/dev/null 2>&1 || true; df -h /var/lib/aquifer | tail -1" >&2
+  echo "SIZE=$size"
 }
 
 # --- build / plan / up -------------------------------------------------------------------------
@@ -233,7 +329,7 @@ print("\nResources to create:", file=sys.stderr)
 for t, n in sorted(counts.items()):
     print(f"  {n:3d}  {t}", file=sys.stderr)
 print(f"  ---\n  {sum(counts.values()):3d}  total", file=sys.stderr)
-print("\nBaseline cost: ~$20/month in eu-west-1 (t4g.small); model usage is extra. See docs/cost.md.", file=sys.stderr)
+print("\nBaseline cost: per the size in terraform.tfvars (small ~$19, medium ~$33, large ~$62 per month in eu-west-1); model usage is extra. See docs/cost.md.", file=sys.stderr)
 '
   ok "plan saved — './aquifer-aws up' applies exactly this plan"
 }
@@ -455,11 +551,129 @@ cmd_test_updates() {
   return $rc
 }
 
+integrator_fixture() {
+  # The dedicated fixture repository for Integrator mutations (see scripts/seed-github-repos.sh).
+  if [[ -n "${AQUIFER_INTEGRATOR_FIXTURE:-}" ]]; then echo "$AQUIFER_INTEGRATOR_FIXTURE"; return; fi
+  local owner; owner="$(gh api user -q .login)"
+  if gh repo view "$owner/aquifer-test-integrator" >/dev/null 2>&1; then
+    echo "$owner/aquifer-test-integrator"
+  else
+    echo "$owner/aquifer-test-legacy-billing"  # fallback: no other test mutates this repo
+  fi
+}
+
+wait_healthy() {
+  remote 'for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1' >/dev/null
+}
+
+# Test helpers (used by test-integrator only; they affect only this deployment's server).
+cmd__fault() {
+  if [[ "${1:-}" == "on" ]]; then
+    # Outbound HTTPS to everything but AWS endpoints goes to a closed port.
+    remote 'mkdir -p /etc/systemd/system/aquifer.service.d && printf "[Service]\nEnvironment=HTTPS_PROXY=http://127.0.0.1:9\nEnvironment=NO_PROXY=.amazonaws.com,169.254.169.254,127.0.0.1,localhost\n" > /etc/systemd/system/aquifer.service.d/zz-test-fault.conf && systemctl daemon-reload && systemctl restart aquifer' >/dev/null
+  else
+    remote 'rm -f /etc/systemd/system/aquifer.service.d/zz-test-fault.conf && systemctl daemon-reload && systemctl restart aquifer' >/dev/null
+  fi
+  wait_healthy
+}
+
+cmd__crash_mid_sync() {
+  # Kill -9 the server while an mcp_page job is running, wait for systemd to restart it, and
+  # report how many interrupted jobs the new process recovered.
+  remote 'Q=/var/lib/aquifer/queue.db; L=/var/log/aquifer/aquifer.log; before=$(grep -c jobs_recovered_after_restart $L || true)
+for i in $(seq 1 600); do
+  n=$(/opt/aquifer/venv/bin/python -c "import sqlite3; print(sqlite3.connect(\"file:$Q?mode=ro\", uri=True).execute(\"select count(*) from jobs where status=\x27running\x27 and kind=\x27mcp_page\x27\").fetchone()[0])")
+  [ "$n" -gt 0 ] && break; sleep 0.1
+done
+systemctl kill -s KILL aquifer; sleep 8
+for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break; sleep 2; done
+after=$(grep -c jobs_recovered_after_restart $L || true)
+line=$(grep jobs_recovered_after_restart $L | tail -1)
+jobs=$(echo "$line" | sed -n "s/.*\"jobs\": \([0-9]*\).*/\1/p")
+[ "$after" -gt "$before" ] && echo "RECOVERED=${jobs:-0}" || echo "RECOVERED=0"'
+}
+
+cmd_test_integrator() {
+  # End-to-end MCP Integrator check against GitHub's real MCP server, with all mutations in a
+  # dedicated fixture repository: import, retrieval, unchanged runs, updates, retries during a
+  # network fault, crash recovery, deletions.
+  local py; py="$(python_bin)"
+  local repo; repo="$(integrator_fixture)"
+  local name="${1:-e2e-github}"
+  gh api -X PATCH "repos/$repo" -F has_discussions=true >/dev/null
+  if ! aq sources status --json | grep -q "\"name\": \"$name\""; then
+    say "connecting GitHub's MCP server as source '$name' for $repo (token from gh, stored in SSM)"
+    local ref; ref="$(cmd_source_token "$name" --from-gh 2>/dev/null | sed -n 's/^TOKEN_REF=//p')"
+    aq sources add "$name" --provider github --token-ref "$ref" >&2
+    # Page size 1 so a run spans several pages (needed by the crash-recovery check).
+    aq sources template "$name" --stream discussions --target "$repo" --page-size 1 >&2
+    aq sources template "$name" --stream releases --target "$repo" >&2
+    aq sources preview "$name" --limit 1 >/dev/null
+    aq sources enable "$name" >&2
+  fi
+  local url; url="$(mcp_base)"
+  trap stop_forward EXIT
+  say "MCP Integrator end-to-end (GitHub remote MCP server → Aquifer → Aquifer MCP), fixture $repo"
+  "$py" "$HERE/tests/integrator_e2e.py" --url "$url" --token "$(mcp_token)" --repo "$repo" \
+    --source "$name" --aquifer "$HERE/aquifer-aws run" \
+    --fault-on "$HERE/aquifer-aws _fault on" --fault-off "$HERE/aquifer-aws _fault off" \
+    --crash "$HERE/aquifer-aws _crash-mid-sync" --json-out "$BUILD/integrator-e2e.json"
+}
+
 # --- logs / maintenance / down -------------------------------------------------------------------
 
 cmd_logs() { aws logs tail "$(tfout log_group)" --since "${1:-30}m" --format short; }
 
-cmd_run() { aq "$@" >&2; }
+cmd_run() { aq "$@"; }
+
+# --- MCP Integrator ------------------------------------------------------------------------------
+
+cmd_sources() { aq sources "$@"; }
+
+cmd_source_token() {
+  # source-token NAME [--from-gh]: store a source's bearer token in SSM (never on a command line).
+  local name="${1:?usage: source-token NAME [--from-gh]  (otherwise the token is read from stdin)}"
+  local ref="$(tfout ssm_prefix)/sources/$name/token"
+  local tok; tok="$(mktemp)"; chmod 600 "$tok"
+  if [[ "${2:-}" == "--from-gh" ]]; then printf '%s' "$(gh auth token)" > "$tok"
+  else
+    [[ -t 0 ]] && echo "paste the token, then Ctrl-D:" >&2
+    tr -d '\r\n' > "$tok"
+  fi
+  [[ -s "$tok" ]] || { rm -f "$tok"; die "empty token"; }
+  aws ssm put-parameter --name "$ref" --type SecureString --overwrite --value "file://$tok" >/dev/null
+  rm -f "$tok"
+  ok "token stored at ssm:$ref"
+  echo "TOKEN_REF=ssm:$ref"
+  echo "next: ./aquifer-aws sources add $name --provider github --token-ref ssm:$ref" >&2
+}
+
+cmd_authorize() {
+  # authorize NAME: OAuth for an MCP source. The browser must reach the server's callback, so
+  # the SSM tunnel is opened first (unless a public domain is configured).
+  local name="${1:?usage: authorize NAME}" req out status url shown=0
+  [[ "$(tfout mcp_url)" == https://* ]] || start_forward
+  req="$(aq sources authorize "$name" --no-wait | sed -n 's/^REQUEST_ID=//p')"
+  [[ -n "$req" ]] || die "could not start the authorization (is the source an OAuth source?)"
+  say "waiting for the authorization URL"
+  for _ in $(seq 1 140); do
+    out="$(aq sources oauth-status "$req")"
+    status="$("$(python_bin)" -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$out")"
+    url="$("$(python_bin)" -c 'import json,sys; print(json.load(sys.stdin).get("auth_url") or "")' <<<"$out")"
+    if [[ -n "$url" && $shown == 0 ]]; then
+      printf '\n  Open this URL in a browser on this computer and approve access:\n\n  %s\n\n' "$url" >&2
+      echo "AUTH_URL=$url"
+      [[ "${AQUIFER_OPEN_BROWSER:-}" == "1" ]] && command -v open >/dev/null && open "$url"
+      shown=1
+    fi
+    case "$status" in
+      succeeded) ok "authorized $name"; stop_forward; return 0 ;;
+      failed) stop_forward; die "authorization failed: $("$(python_bin)" -c 'import json,sys; print(json.load(sys.stdin).get("error"))' <<<"$out")" ;;
+    esac
+    sleep 5
+  done
+  stop_forward; die "timed out waiting for the browser authorization"
+}
 
 cmd_upgrade_os() {
   confirm "Apply OS updates and reboot the server (queries unavailable for ~1 minute)?" || die "aborted"
@@ -491,6 +705,7 @@ main() {
     plan) cmd_plan ;;
     up) cmd_up ;;
     deploy) cmd_deploy ;;
+    resize) cmd_resize "$@" ;;
     sync) cmd_sync "$@" ;;
     status) cmd_status ;;
     retry-failed) cmd_retry_failed ;;
@@ -499,12 +714,18 @@ main() {
     token) cmd_token ;;
     test) cmd_test "$@" ;;
     test-updates) cmd_test_updates ;;
+    test-integrator) cmd_test_integrator "$@" ;;
+    _fault) cmd__fault "$@" ;;
+    _crash-mid-sync) cmd__crash_mid_sync ;;
     metrics) cmd_metrics ;;
     logs) cmd_logs "$@" ;;
     run) cmd_run "$@" ;;
+    sources) cmd_sources "$@" ;;
+    source-token) cmd_source_token "$@" ;;
+    authorize) cmd_authorize "$@" ;;
     upgrade-os) cmd_upgrade_os ;;
     down) cmd_down ;;
-    *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' ;;
   esac
 }
 

@@ -24,6 +24,17 @@ The controls below apply to every profile unless a row names one. The **small pr
 | IAM | Bedrock invoke on the configured model ARNs only; SSM parameters under the deployment's own path; read on its own artifact bucket; write to its own log group; SSM managed-instance core | Per-role least privilege |
 | Data at rest | Encrypted EBS root and data volumes; snapshots inherit encryption | OpenSearch Serverless (AWS-owned key), SQS SSE, S3 SSE |
 
+## MCP Integrator
+
+Content imported from external MCP servers enters the same trust domain: every Aquifer token
+can read it. The Integrator:
+- calls only approved read-only tools (annotation *and* name checks)
+- refuses private network destinations (including OAuth endpoints a server advertises)
+- treats remote tool descriptions and results as untrusted data
+- stores credentials as SSM SecureStrings or 0600 files
+
+Details: [integrator.md](./integrator.md#safety). Tests: `tests/test_integrator.py`.
+
 ## Enforced controls
 
 | Control | How it is enforced | Tested in |

@@ -25,7 +25,9 @@ class SourceType(StrEnum):
     # Jira has no connector yet, but the type exists so the semantic-indexing prompt registry
     # can define Jira-specific extraction (demonstrating modularity across input types).
     JIRA = "jira"
-    # Future: CONFLUENCE = "confluence", SLACK = "slack", ...
+    # Content imported from an external MCP server by the built-in MCP Integrator. The
+    # document's ``repo`` is the source's namespace, ``mcp/<source name>``.
+    MCP = "mcp"
 
 
 class DocumentKind(StrEnum):
@@ -38,6 +40,12 @@ class DocumentKind(StrEnum):
     COMMENT = "comment"
     # A file read from a repository at a specific commit (Terraform, YAML descriptors, ADRs).
     FILE = "file"
+    # Kinds of items imported from external tools (MCP Integrator).
+    TICKET = "ticket"
+    PAGE = "page"
+    RELEASE = "release"
+    MESSAGE = "message"
+    RECORD = "record"
 
 
 class RelationshipOrigin(StrEnum):
