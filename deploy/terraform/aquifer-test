@@ -408,22 +408,36 @@ cmd_test() {
   ok "report: $BUILD/e2e-report.json"
 }
 
+gh_file() {
+  # gh_file get|put|delete REPO PATH [MESSAGE] [CONTENT_FILE] — GitHub Contents API (one commit
+  # per call). Used instead of git push, which intermittently returned "Internal Server Error".
+  local op="$1" repo="$2" path="$3" msg="${4:-}" file="${5:-}" sha
+  sha="$(gh api "repos/$repo/contents/$path" -q .sha 2>/dev/null || true)"
+  case "$op" in
+    get) gh api "repos/$repo/contents/$path" -q .content | base64 -d ;;
+    put) gh api -X PUT "repos/$repo/contents/$path" -f message="$msg" \
+           -f content="$(base64 < "$file" | tr -d '\n')" ${sha:+-f sha="$sha"} -q .commit.sha >/dev/null ;;
+    delete) gh api -X DELETE "repos/$repo/contents/$path" -f message="$msg" -f sha="$sha" >/dev/null ;;
+  esac
+}
+
 cmd_test_updates() {
   local payments; payments="$("${TF[@]}" output -json repos | "$(python_bin)" -c 'import json,sys; print(json.load(sys.stdin)[0])')"
   local work; work="$(mktemp -d)"
+  local compose="docker-compose.yml" adr="docs/adr/0007-ledger-on-postgres.md"
+  gh_file get "$payments" "$compose" > "$work/compose.orig"
+  gh_file get "$payments" "$adr" > "$work/adr.orig"
   say "committing a change (redis → valkey) and deleting the ADR in $payments"
-  gh repo clone "$payments" "$work/r" -- -q
-  sed -i.bak 's/      - redis/      - valkey/' "$work/r/docker-compose.yml" && rm "$work/r/docker-compose.yml.bak"
-  git -C "$work/r" rm -q docs/adr/0007-ledger-on-postgres.md
-  git -C "$work/r" -c user.name=aquifer-test -c user.email=aquifer-test@users.noreply.github.com \
-    commit -qam "test: change a dependency and delete an ADR"
-  git -C "$work/r" push -q
+  sed 's/      - redis/      - valkey/' "$work/compose.orig" > "$work/compose.new"
+  gh_file put "$payments" "$compose" "test: replace redis with valkey" "$work/compose.new"
+  gh_file delete "$payments" "$adr" "test: delete an ADR"
   local rc=0
   # Run the checks in a subshell so a failure (die/exit) still reaches the revert below.
   ( cmd_ingest && cmd_test --after-mutation ) || rc=$?
-  say "reverting the test commit"
-  git -C "$work/r" revert --no-edit HEAD >/dev/null && git -C "$work/r" push -q \
-    || warn "revert failed — revert the last commit in $payments manually"
+  say "restoring the original files"
+  gh_file put "$payments" "$compose" "test: restore $compose" "$work/compose.orig" \
+    && gh_file put "$payments" "$adr" "test: restore $adr" "$work/adr.orig" \
+    || warn "restore failed — restore $compose and $adr in $payments manually"
   cmd_ingest || rc=$?
   rm -rf "$work"
   return $rc
