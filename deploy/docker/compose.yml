@@ -1,0 +1,30 @@
+# Aquifer on existing infrastructure: one container, one volume.
+#
+#   mkdir -p secrets && gh auth token > secrets/github-token && chmod 600 secrets/github-token
+#   cp aquifer.env.example aquifer.env    # edit repositories and models
+#   docker compose up -d
+#   docker compose exec aquifer aquifer status
+#   cat data/mcp-tokens.json             # the MCP bearer token (created on first start)
+#
+# Put a TLS-terminating proxy in front of port 8080 before exposing it beyond localhost.
+services:
+  aquifer:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.server
+    image: aquifer-server:local
+    restart: unless-stopped
+    env_file: aquifer.env
+    environment:
+      AQUIFER_GITHUB__TOKEN_SECRET: file:/run/secrets/github-token
+      AQUIFER_MCP__AUTH_TOKENS_REF: file:/data/mcp-tokens.json
+    secrets:
+      - github-token
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8080:8080"
+
+secrets:
+  github-token:
+    file: ./secrets/github-token

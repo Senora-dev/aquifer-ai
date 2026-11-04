@@ -37,12 +37,17 @@ mcp = [
     "mcp>=1.8,<2",
     "uvicorn>=0.29",
 ]
+# The single-server profile (`aquifer serve`): MCP server, scheduler, workers, SQLite index.
+server = [
+    "aquifer[aws,github,mcp]",
+    "numpy>=1.26",
+]
 # Everything needed to run ingestion Lambdas locally / in the image.
 ingestion = [
     "aquifer[aws,github]",
 ]
 dev = [
-    "aquifer[aws,github,mcp]",
+    "aquifer[server]",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
@@ -55,6 +60,9 @@ cdk = [
     "aws-cdk-lib>=2.140,<3",
     "constructs>=10.3,<11",
 ]
+
+[project.scripts]
+aquifer = "aquifer.node.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aquifer"]

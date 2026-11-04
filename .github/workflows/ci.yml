@@ -74,17 +74,16 @@ jobs:
           fi
 
   terraform:
-    name: Terraform evaluation environment validates
+    name: Terraform (small profile) validates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
       - name: fmt + validate (no AWS access)
-        working-directory: deploy/terraform
+        working-directory: deploy/aws
         run: |
           terraform fmt -check -recursive
           terraform init -backend=false -input=false
-          mkdir -p .build && touch .build/lambda.zip
           terraform validate
       - name: Shell scripts parse
-        run: bash -n deploy/terraform/aquifer-test deploy/terraform/scripts/seed-github-repos.sh
+        run: bash -n deploy/aws/aquifer-aws deploy/aws/scripts/seed-github-repos.sh

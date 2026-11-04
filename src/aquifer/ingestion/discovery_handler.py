@@ -1,4 +1,4 @@
-"""Discovery Lambda — triggered on a schedule by EventBridge.
+"""Discovery — on a schedule (EventBridge → Lambda, or the single-server scheduler).
 
 For each configured source it:
 
@@ -24,8 +24,8 @@ from datetime import UTC, datetime, timedelta
 from aquifer.core.config import Settings, get_settings
 from aquifer.core.errors import configure_lambda_logging, log_event
 from aquifer.core.models import DocumentKind, FetchJob, Source, SourceType
-from aquifer.ingestion import aws
 from aquifer.ingestion.factory import build_connector, build_vector_store
+from aquifer.ingestion.runtime import get_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def _watermark_key(source_id: str) -> str:
 def _github_token(settings: Settings) -> str | None:
     if not settings.github.token_secret:
         return None
-    return aws.get_secret(settings.github.token_secret)
+    return get_runtime().get_secret(settings.github.token_secret)
 
 
 def purge_unlisted_repos(settings: Settings, vector_store=None) -> int:  # noqa: ANN001
@@ -88,7 +88,7 @@ def enqueue_failed_retries(settings: Settings, vector_store=None) -> int:  # noq
             kind_value = DocumentKind(kind)
         except ValueError:
             kind_value = DocumentKind.FILE
-        aws.enqueue_job(settings.ingestion.queue_url, FetchJob(
+        get_runtime().enqueue(FetchJob(
             source_id="retry", source_type=SourceType.GITHUB, repo=repo, kind=kind_value,
             job_type="reprocess_failed", document_ids=ids[i : i + size]))
     log_event(logger, "failed_extraction_requeued", documents=len(ids))
@@ -115,7 +115,7 @@ def enqueue_due_retries(settings: Settings, vector_store=None, now=None) -> dict
                 kind_value = DocumentKind(kind)
             except ValueError:
                 kind_value = DocumentKind.FILE
-            aws.enqueue_job(settings.ingestion.queue_url, FetchJob(
+            get_runtime().enqueue(FetchJob(
                 source_id="retry", source_type=SourceType.GITHUB, repo=repo, kind=kind_value,
                 job_type="reprocess", document_ids=ids[i : i + size]))
             jobs += 1
@@ -127,19 +127,30 @@ def enqueue_due_retries(settings: Settings, vector_store=None, now=None) -> dict
             "by_error": errors}
 
 
+def _has_index(settings: Settings) -> bool:
+    return settings.vector_store.backend != "opensearch" or bool(settings.vector_store.endpoint)
+
+
 def handler(event=None, context=None) -> dict:  # noqa: ANN001 - Lambda signature
     settings = get_settings()
     configure_lambda_logging(settings.log_level)
     if isinstance(event, dict) and event.get("retry_failed"):
         # Operator action after fixing a cause (e.g. a model or prompt): fresh retry budget.
         return {"requeued_failed": enqueue_failed_retries(settings)}
+    return run_discovery(settings, full=isinstance(event, dict) and bool(event.get("full")))
+
+
+def run_discovery(settings: Settings, *, full: bool = False) -> dict:
+    """One discovery run. ``full`` ignores the watermark (re-lists everything; unchanged
+    documents are still skipped by content hash)."""
     ingestion = settings.ingestion
+    runtime = get_runtime()
     run_started = datetime.now(UTC)
 
     enqueued = 0
     for source in _build_sources():
         key = _watermark_key(source.id)
-        since = aws.read_watermark(ingestion.state_bucket, key)
+        since = None if full else runtime.read_watermark(key)
         if since is not None:
             since = since - timedelta(seconds=ingestion.watermark_overlap_s)
         source.config["since"] = since
@@ -150,17 +161,17 @@ def handler(event=None, context=None) -> dict:  # noqa: ANN001 - Lambda signatur
             connector.validate_access()  # raises SourceAuthError with a clear message
 
         for job in connector.discover(source):
-            aws.enqueue_job(ingestion.queue_url, job)
+            runtime.enqueue(job)
             enqueued += 1
 
         # Advance the high-water mark for the next scheduled run.
-        aws.write_watermark(ingestion.state_bucket, key, run_started)
+        runtime.write_watermark(key, run_started)
         log_event(logger, "source_discovered", source_id=source.id,
                   since=since.isoformat() if since else None)
 
     purged = 0
     retries: dict = {}
-    if settings.vector_store.endpoint:
+    if _has_index(settings):
         if ingestion.purge_unlisted_repos:
             purged = purge_unlisted_repos(settings)
         retries = enqueue_due_retries(settings)

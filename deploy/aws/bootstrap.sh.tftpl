@@ -1,0 +1,165 @@
+#!/bin/bash
+# First-boot setup of the Aquifer server (Amazon Linux 2023, arm64). Idempotent.
+# Rendered by Terraform; application updates run /opt/aquifer/bin/aquifer-update (via SSM).
+set -euo pipefail
+exec > >(tee -a /var/log/aquifer-bootstrap.log) 2>&1
+
+REGION="${region}"
+BUCKET="${bucket}"
+SSM_PREFIX="${ssm_prefix}"
+VOLUME_ID="${volume_id}"
+LOG_GROUP="${log_group}"
+DOMAIN="${domain}"
+CADDY_VERSION="2.9.1"
+
+# --- data volume (attached after boot; wait for it) -----------------------------------------
+DEV="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$(echo "$VOLUME_ID" | tr -d '-')"
+for _ in $(seq 1 120); do [ -e "$DEV" ] && break; sleep 5; done
+[ -e "$DEV" ] || { echo "data volume $VOLUME_ID never appeared"; exit 1; }
+if ! blkid "$DEV" >/dev/null 2>&1; then mkfs.ext4 -q -L aquifer-data "$DEV"; fi
+mkdir -p /var/lib/aquifer
+grep -q 'LABEL=aquifer-data' /etc/fstab || \
+  echo 'LABEL=aquifer-data /var/lib/aquifer ext4 defaults,nofail,noatime 0 2' >> /etc/fstab
+mountpoint -q /var/lib/aquifer || mount /var/lib/aquifer
+
+# --- packages and user ------------------------------------------------------------------------
+dnf install -y -q python3.12 python3.12-pip amazon-cloudwatch-agent
+id aquifer >/dev/null 2>&1 || useradd --system --home-dir /var/lib/aquifer --shell /sbin/nologin aquifer
+chown aquifer:aquifer /var/lib/aquifer && chmod 700 /var/lib/aquifer
+install -d -m 755 /opt/aquifer/bin /etc/aquifer /var/log/aquifer
+chown aquifer:aquifer /var/log/aquifer
+
+# --- update script: fetch the wheel and configuration, install, restart -------------------------
+cat > /opt/aquifer/bin/aquifer-update <<'UPDATE'
+#!/bin/bash
+# Install the current Aquifer wheel and configuration, then restart the service.
+set -euo pipefail
+source /etc/aquifer/deploy.env
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+aws s3 cp --quiet --recursive "s3://$BUCKET/artifacts/" "$WORK/" --exclude '*' --include '*.whl'
+WHEEL="$(ls "$WORK"/*.whl | head -1)"
+[ -x /opt/aquifer/venv/bin/python ] || python3.12 -m venv /opt/aquifer/venv
+/opt/aquifer/venv/bin/pip install -q --upgrade pip
+/opt/aquifer/venv/bin/pip install -q "aquifer[server] @ file://$WHEEL"
+/opt/aquifer/venv/bin/pip install -q --force-reinstall --no-deps "$WHEEL"
+ln -sf /opt/aquifer/venv/bin/aquifer /usr/local/bin/aquifer
+aws ssm get-parameter --region "$REGION" --name "$SSM_PREFIX/config" \
+  --query Parameter.Value --output text > /etc/aquifer/aquifer.env.new
+install -m 640 -o root -g aquifer /etc/aquifer/aquifer.env.new /etc/aquifer/aquifer.env
+rm -f /etc/aquifer/aquifer.env.new
+systemctl daemon-reload
+systemctl restart aquifer
+for _ in $(seq 1 60); do
+  curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && { echo "aquifer healthy"; exit 0; }
+  sleep 2
+done
+echo "aquifer did not become healthy"; journalctl -u aquifer -n 50 --no-pager; exit 1
+UPDATE
+chmod 755 /opt/aquifer/bin/aquifer-update
+cat > /etc/aquifer/deploy.env <<EOF
+REGION=$REGION
+BUCKET=$BUCKET
+SSM_PREFIX=$SSM_PREFIX
+EOF
+
+# --- service ------------------------------------------------------------------------------------
+cat > /etc/systemd/system/aquifer.service <<'UNIT'
+[Unit]
+Description=Aquifer (MCP server, scheduler, ingestion workers)
+After=network-online.target var-lib-aquifer.mount
+Wants=network-online.target
+RequiresMountsFor=/var/lib/aquifer
+
+[Service]
+User=aquifer
+Group=aquifer
+EnvironmentFile=/etc/aquifer/aquifer.env
+ExecStartPre=/opt/aquifer/venv/bin/aquifer init
+ExecStart=/opt/aquifer/venv/bin/aquifer serve
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/aquifer/aquifer.log
+StandardError=append:/var/log/aquifer/aquifer.log
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/aquifer /var/log/aquifer
+# Leave headroom for the OS, the log agent and Caddy.
+MemoryHigh=80%
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl enable aquifer >/dev/null
+
+cat > /etc/logrotate.d/aquifer <<'ROT'
+/var/log/aquifer/aquifer.log {
+  daily
+  rotate 3
+  compress
+  missingok
+  copytruncate
+}
+ROT
+
+# --- logs to CloudWatch -------------------------------------------------------------------------
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<EOF
+{"agent": {"run_as_user": "root"},
+ "logs": {"logs_collected": {"files": {"collect_list": [
+   {"file_path": "/var/log/aquifer/aquifer.log", "log_group_name": "$LOG_GROUP",
+    "log_stream_name": "{instance_id}/aquifer", "retention_in_days": -1},
+   {"file_path": "/var/log/aquifer-bootstrap.log", "log_group_name": "$LOG_GROUP",
+    "log_stream_name": "{instance_id}/bootstrap", "retention_in_days": -1}]}}}}
+EOF
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json >/dev/null
+
+# --- optional public HTTPS (Caddy + Let's Encrypt) ---------------------------------------------
+if [ -n "$DOMAIN" ]; then
+  if [ ! -x /usr/local/bin/caddy ]; then
+    T="$(mktemp -d)"
+    BASE="https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION"
+    curl -fsSL -o "$T/caddy.tgz" "$BASE/caddy_$${CADDY_VERSION}_linux_arm64.tar.gz"
+    curl -fsSL -o "$T/sums" "$BASE/caddy_$${CADDY_VERSION}_checksums.txt"
+    (cd "$T" && grep "caddy_$${CADDY_VERSION}_linux_arm64.tar.gz" sums | awk '{print $1"  caddy.tgz"}' | sha512sum -c -)
+    tar -xzf "$T/caddy.tgz" -C "$T" caddy && install -m 755 "$T/caddy" /usr/local/bin/caddy
+    rm -rf "$T"
+  fi
+  id caddy >/dev/null 2>&1 || useradd --system --home-dir /var/lib/caddy --create-home --shell /sbin/nologin caddy
+  install -d -o caddy -g caddy /etc/caddy
+  cat > /etc/caddy/Caddyfile <<EOF
+$DOMAIN {
+  reverse_proxy 127.0.0.1:8080
+}
+EOF
+  cat > /etc/systemd/system/caddy.service <<'UNIT'
+[Unit]
+Description=Caddy (HTTPS for Aquifer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=caddy
+Group=caddy
+ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Restart=always
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now caddy
+fi
+
+/opt/aquifer/bin/aquifer-update
+echo "bootstrap complete"

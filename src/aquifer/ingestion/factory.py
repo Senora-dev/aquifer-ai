@@ -47,6 +47,14 @@ _memory_stores: dict[str, VectorStore] = {}
 
 def build_vector_store(settings: Settings | None = None) -> VectorStore:
     settings = settings or get_settings()
+    if settings.vector_store.backend == "sqlite":
+        from aquifer.vectorstore.sqlite import SqliteVectorStore
+
+        # One store per file per process: the MCP server and the workers share it.
+        key = "sqlite:" + settings.vector_store.sqlite_path
+        if key not in _memory_stores:
+            _memory_stores[key] = SqliteVectorStore(settings.vector_store.sqlite_path)
+        return _memory_stores[key]
     if settings.vector_store.backend == "memory":
         from aquifer.vectorstore.memory import InMemoryVectorStore
 

@@ -31,6 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, help="write the full JSON report here")
     parser.add_argument("--bedrock", action="store_true",
                         help="use Bedrock embeddings + LLM extraction (needs AWS credentials)")
+    parser.add_argument("--store", choices=["memory", "sqlite"], default="memory",
+                        help="index implementation to benchmark (sqlite = single-server profile)")
     parser.add_argument("--price-embed-per-1k", type=float,
                         help="USD per 1K embedding tokens (check current Bedrock pricing)")
     parser.add_argument("--price-llm-input-per-1k", type=float,
@@ -42,12 +44,13 @@ def main(argv: list[str] | None = None) -> int:
         prices = {"embed_per_1k": args.price_embed_per_1k or 0.0,
                   "llm_input_per_1k": args.price_llm_input_per_1k or 0.0}
     report = run_benchmark(args.corpus, args.cases, mode="bedrock" if args.bedrock else "offline",
-                           golden_path=args.golden, prices=prices)
+                           golden_path=args.golden, prices=prices, store=args.store)
     if args.out:
         args.out.write_text(json.dumps(report, indent=2, default=str))
 
-    summary = {k: report[k] for k in ("mode", "valid", "extraction_states", "extraction_errors",
-                                      "cases", "metrics", "latency_ms", "by_scenario")}
+    summary = {k: report[k] for k in ("mode", "store", "valid", "extraction_states",
+                                      "extraction_errors", "cases", "metrics", "latency_ms",
+                                      "by_scenario")}
     summary["extraction"] = {k: v for k, v in (report["extraction"] or {}).items()
                              if k != "per_file"}
     summary["cost"] = report["cost"]

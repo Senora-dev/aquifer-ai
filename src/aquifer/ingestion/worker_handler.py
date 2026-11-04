@@ -1,4 +1,4 @@
-"""Worker Lambda — triggered by SQS.
+"""Worker — one fetch job at a time (SQS → Lambda, or the single-server worker threads).
 
 Each SQS record is one :class:`FetchJob`. The worker processes a single page through the
 :class:`IngestionPipeline` and, if the connector reports more pages, enqueues the successor job
@@ -32,9 +32,10 @@ from aquifer.core.errors import (
 )
 from aquifer.core.hooks import get_pipeline
 from aquifer.core.models import FetchJob, SourceType
-from aquifer.ingestion import aws
+from aquifer.ingestion import aws  # noqa: F401 - kept importable for tests and callers
 from aquifer.ingestion.factory import build_connector, build_embedder, build_vector_store
 from aquifer.ingestion.pipeline import IngestionPipeline
+from aquifer.ingestion.runtime import get_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def _github_token(settings: Settings) -> str | None:
         return None
     cached = _token_cache.get(secret)
     if cached is None or time.monotonic() - cached[0] > _TOKEN_TTL_S:
-        _token_cache[secret] = (time.monotonic(), aws.get_secret(secret))
+        _token_cache[secret] = (time.monotonic(), get_runtime().get_secret(secret))
     return _token_cache[secret][1]
 
 
@@ -119,17 +120,14 @@ def handler(event, context=None) -> dict:  # noqa: ANN001 - Lambda signature
                           repo=job.repo, kind=str(job.kind), attempt=job.attempt)
                 raise
             delay = int(min(900, max(1, exc.retry_after)))
-            aws.enqueue_job(
-                settings.ingestion.queue_url,
-                job.model_copy(update={"attempt": job.attempt + 1}),
-                delay_seconds=delay,
-            )
+            get_runtime().enqueue(job.model_copy(update={"attempt": job.attempt + 1}),
+                                  delay_seconds=delay)
             requeued += 1
             log_event(logger, "job_rate_limited", level=logging.WARNING, repo=job.repo,
                       kind=str(job.kind), delay_s=delay, attempt=job.attempt + 1)
             continue
         if successor is not None:
-            aws.enqueue_job(settings.ingestion.queue_url, successor)
+            get_runtime().enqueue(successor)
         processed += 1
     logger.info("worker processed %d job(s)", processed)
     return {"processed": processed, "requeued": requeued}
