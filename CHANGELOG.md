@@ -37,6 +37,8 @@ Found by deploying Engineering Context v1 to AWS and ingesting real GitHub repos
   actionable error codes (Bedrock Marketplace subscription, use-case form, model availability,
   access, credentials), backlog in `list_sources` and discovery logs.
 - `aquifer-test check` explains Bedrock setup problems; `aquifer-test retry-failed`.
+- Docs: Bedrock benchmark results, evaluation environment in the README, GitHub token rotation
+  and retry operations, and a clear line between planned push ingestion and synchronization.
 - Benchmark status scenarios and regression tests for additions, removals, replacements,
   negations, proposals, merged/unmerged PRs, conflicting evidence, retries and lifecycle.
 
