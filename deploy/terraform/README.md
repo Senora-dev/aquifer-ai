@@ -26,6 +26,7 @@ cd deploy/terraform
 ./aquifer-test up           # applies that plan, stores the GitHub token, ingests, waits
 ./aquifer-test test         # end-to-end MCP checks + idempotency check
 ./aquifer-test test-updates # pushes a change + a deletion to GitHub, re-ingests, verifies, reverts
+./aquifer-test status      # queue depth, DLQ, last hour's ingestion results, MCP tasks
 ./aquifer-test connect      # forwards the MCP endpoint to localhost and prints the Claude Code command
 ./aquifer-test down         # terraform destroy (asks first)
 ```
@@ -71,6 +72,35 @@ The JSON report is written to `.build/e2e-report.json`.
 claude mcp add --transport http aquifer-test http://127.0.0.1:18080/mcp \
   --header "Authorization: Bearer $(./aquifer-test token)"
 ```
+
+## Operations
+
+| Command | When |
+| --- | --- |
+| `./aquifer-test ingest` | Run discovery now instead of waiting for the 15-minute schedule; waits until the queue drains |
+| `./aquifer-test ingest --full` | Re-list everything from GitHub (removes the incremental watermark). Unchanged documents are still skipped. A safety net, not the normal way to recover from failures |
+| `./aquifer-test retry-failed` | Re-run LLM extraction for documents that exhausted their automatic retries (for example after enabling Bedrock model access) |
+| `./aquifer-test logs worker 30` | Last 30 minutes of worker logs (`discovery` and `mcp` also work) |
+
+Failed LLM extraction is retried automatically with exponential backoff (5 minutes, doubling,
+up to 6 hours; 8 attempts, or 3 for errors caused by the content). The MCP `list_sources` tool and the
+discovery logs (`./aquifer-test logs discovery`) show the backlog by status and error code.
+Error codes and fixes: [docs/operations.md](../../docs/operations.md).
+
+### Rotating the GitHub token
+
+Logging in again with `gh` does **not** update the copy in Secrets Manager. After rotating:
+
+```bash
+tok="$(mktemp)"; chmod 600 "$tok"; printf '%s' "$(gh auth token)" > "$tok"
+aws secretsmanager put-secret-value --secret-id "$(terraform output -raw github_token_secret_arn)" \
+  --secret-string "file://$tok" >/dev/null; rm -f "$tok"
+./aquifer-test ingest && ./aquifer-test status    # validates GitHub access end to end
+```
+
+Workers re-read the secret within 15 minutes, and immediately when GitHub answers 401, so the
+old token stops being used without a redeploy. Revoke the old token on GitHub afterwards. The
+token is never printed; avoid `echo`-ing it or passing it on the command line.
 
 ## Notes
 

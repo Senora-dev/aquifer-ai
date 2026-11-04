@@ -14,10 +14,10 @@ database. Before touching anything, the agent needs to know what depends on `bil
 git clone https://github.com/Senora-dev/aquifer-ai.git && cd aquifer-ai
 python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 python -m aquifer.local ingest examples/demo/repos
-# indexed=17 unchanged=0 failed=0 deleted=0 store=.aquifer-local/index.json
+# indexed=20 unchanged=0 failed=0 deleted=0 store=.aquifer-local/index.json
 ```
 
-Run the ingest again: `indexed=0 unchanged=17` — re-syncing is idempotent and free.
+Run the ingest again: `indexed=0 unchanged=20` — re-syncing is idempotent and free.
 
 ## 0:30 — Connect the agent (30 s)
 

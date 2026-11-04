@@ -141,8 +141,20 @@ limitations.
 
 GitHub: READMEs, issues, pull requests (with merged/open state), and repository files matching
 configurable globs. Deterministic extraction: Terraform (`.tf`), docker-compose, Backstage
-`catalog-info.yaml`. Other connectors can be added through the `Connector` interface
+`catalog-info.yaml`. Local mode also indexes repository directories on disk (for development and
+evaluation). Other connectors can be added through the `Connector` interface
 ([docs/contributing.md](docs/contributing.md)).
+
+**Planned, not yet available:**
+
+- **Push ingestion over MCP and HTTP.** An agent or pipeline sends documents to Aquifer (for
+  example from a Jira, Notion or Slack MCP server it is connected to) with a write-scoped token.
+  This is *push*, not synchronization: Aquifer knows only what was sent, and updates or deletions
+  in the original tool are reflected only when they are pushed too.
+- **Dedicated connectors with continuous synchronization**, starting with Jira.
+
+Being able to receive documents from an MCP-enabled tool does not mean Aquifer synchronizes with
+that tool.
 
 ## Deploying to AWS, and what it costs
 
@@ -155,6 +167,11 @@ cd infrastructure && cdk bootstrap && cdk deploy -c repos='["your-org/your-repo"
 Full guide: [docs/deployment.md](docs/deployment.md). Operations, observability, uninstall and
 troubleshooting: [docs/operations.md](docs/operations.md).
 
+**To evaluate on AWS first**, use the Terraform environment in
+[deploy/terraform/](deploy/terraform/README.md): one script seeds three private test repositories,
+shows every resource before creating it, deploys, ingests, runs the end-to-end MCP tests, and
+removes everything with `./aquifer-test down`. Roughly $10/day while it runs.
+
 **Idle cost is dominated by OpenSearch Serverless**, which bills a minimum of 2 OCUs while the
 collection exists (1 OCU with `-c aoss_standby_replicas=DISABLED`). At $0.24/OCU-hour (us-east-1)
 that is about **$350/month** (or ~$175 for dev/test) before any traffic. NAT gateway, VPC
@@ -164,7 +181,7 @@ endpoints, the NLB and one small Fargate task add roughly $130/month. Bedrock is
 ## Current limitations
 
 - One trust domain per deployment; no per-user source permissions.
-- GitHub only. Deleted or transferred issues/PRs are not detected (GitHub's incremental API does
+- GitHub is the only synchronized source (push ingestion and a Jira connector are planned). Deleted or transferred issues/PRs are not detected (GitHub's incremental API does
   not report deletions); deleted files, removed READMEs and de-listed repositories are.
 - File provenance is the commit at which the file was read; issue/PR bodies have no revision
   (their `updated_at` is reported instead).
@@ -181,8 +198,9 @@ python scripts/benchmark_retrieval.py --out report.json      # offline, determin
 python scripts/benchmark_retrieval.py --bedrock              # with your Bedrock (costs money)
 ```
 
-45 scenario cases (dependencies, Terraform module references, ADRs, similar names, stale and
-deleted sources, missing evidence, repository isolation). Results and caveats:
+52 scenario cases (dependencies, Terraform module references, ADRs, similar names, stale and
+deleted sources, missing evidence, repository isolation, and relationship status: removed vs
+proposed vs current). Offline: 43 passed, 0 failed, 9 skipped (need an LLM). With Bedrock: 52/52. Results and caveats:
 [docs/benchmark.md](docs/benchmark.md).
 
 ## Project layout

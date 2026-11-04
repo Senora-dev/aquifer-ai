@@ -21,7 +21,7 @@ Run these before declaring work done; all run offline without credentials:
 
 ```bash
 .venv/bin/ruff check src tests scripts infrastructure
-.venv/bin/pytest -q                                   # ~200 tests, ~30 s with CDK installed
+.venv/bin/pytest -q                                   # ~260 tests, ~60 s with CDK installed
 .venv/bin/python scripts/benchmark_retrieval.py       # must report "failed": 0
 ```
 

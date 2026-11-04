@@ -25,7 +25,7 @@ pip install -e ".[dev]"
 
 # Index every repository directory under a root (re-run any time; unchanged files are skipped)
 python -m aquifer.local ingest examples/demo/repos
-# → indexed=17 unchanged=0 failed=0 deleted=0 store=.aquifer-local/index.json
+# → indexed=20 unchanged=0 failed=0 deleted=0 store=.aquifer-local/index.json
 ```
 
 Serve it to an MCP client over stdio (the client starts the process):
