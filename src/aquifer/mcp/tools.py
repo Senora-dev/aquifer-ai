@@ -24,13 +24,21 @@ import logging
 import time
 from typing import Any
 
-from aquifer.core.chunking import reassemble
+from aquifer.core.chunking import newest_generation, reassemble
 from aquifer.core.config import Settings, get_settings
 from aquifer.core.entities import normalize_name, parse_entity_ref, split_namespaced_key
 from aquifer.core.errors import log_event
 from aquifer.core.hooks import InterceptorPipeline
 from aquifer.core.interfaces import Embedder, VectorStore
-from aquifer.core.models import QueryContext, RelationshipOrigin, SearchResult, SourceType
+from aquifer.core.models import (
+    QueryContext,
+    RelationshipOrigin,
+    RelationshipStatus,
+    SearchResult,
+    SourceType,
+)
+from aquifer.semantic.status import ORDER as STATUS_ORDER
+from aquifer.semantic.status import aggregate as aggregate_status
 from aquifer.vectorstore.schema import (
     AGENT_FILTERABLE_FIELDS,
     matches_filters,
@@ -55,6 +63,13 @@ _OPTIONAL_RESULT_FIELDS = (
     "indexed_at",
     "state",
     "extraction_status",
+)
+
+STATUS_NOTICE = (
+    "Relationship status: current = parsed from structured configuration at the indexed "
+    "revision; claimed = a document states it; removed/absent = a document states it no "
+    "longer/does not hold; proposed/not_merged/discussed = not in effect. mention_found only "
+    "means a name occurs in the text, not that the relationship is true."
 )
 
 UNTRUSTED_NOTICE = (
@@ -293,6 +308,10 @@ class ContextTools:
             entry: dict[str, Any] = {"source_type": SourceType.GITHUB.value, "repo": repo}
             if counts:
                 entry["indexed_documents"] = counts.get(repo, 0)
+                processing = self.vector_store.facet("extraction_status", {"repo": repo}, size=10)
+                if processing:
+                    # Documents per extraction state, e.g. {"ok": 12, "retry_pending": 1}.
+                    entry["extraction"] = dict(processing)
                 last = self.vector_store.max_value("indexed_at", {"repo": repo})
                 if last:
                     # When Aquifer last wrote content for this repo — not a claim that the
@@ -314,13 +333,17 @@ class ContextTools:
         principal: str | None = None,
         repo: str | None = None,
         direction: str = "both",
+        statuses: list[str] | None = None,
     ) -> dict:
         """Relationships pointing at (``incoming``) or from (``outgoing``) an entity.
 
         ``entity`` may be a plain name (``billing-api``) or typed (``service:billing-api``);
         matching is case-insensitive and otherwise exact. Each relationship is reported once
-        with all of its supporting evidence, its origin(s), and whether LLM-extracted edges
-        were found in the source text. Items that merely mention the entity are listed under
+        with all of its evidence and an overall ``status``: ``current`` (parsed from structured
+        configuration at the indexed revision), ``claimed`` (a document states it), ``removed``
+        / ``absent`` (a document states it no longer / does not hold), ``proposed``,
+        ``not_merged`` or ``discussed`` (not in effect). ``statuses`` limits the result to some
+        of these (e.g. ``["current"]``). Items that merely mention the entity are listed under
         ``related`` with ``via: ["entity"]``; a mention is not a relationship.
         """
         started = time.monotonic()
@@ -386,12 +409,12 @@ class ContextTools:
                 for dir_ in matched:
                     _add_edge(edges, dir_, rel, result)
 
-        for edge in edges.values():
-            edge.pop("_docs")  # private bookkeeping
+        _finalize_edges(edges)
+        wanted = set(statuses or [])
         edge_list = sorted(
-            edges.values(),
-            key=lambda e: (-e["support"]["explicit"], -e["support"]["documents"], e["type"],
-                           e["target"]),
+            (e for e in edges.values() if not wanted or e["status"] in wanted),
+            key=lambda e: (STATUS_ORDER.index(e["status"]), -e["support"]["explicit"],
+                           -e["support"]["documents"], e["type"], e["target"]),
         )[: ctx.k * 5]
         related = []
         for doc_id in list(by_doc)[: ctx.k]:
@@ -422,14 +445,15 @@ class ContextTools:
         out = {
             "entity": entity,
             "query": {"name": name_key, "type": ref.type, "direction": direction,
-                      "relationship_types": sorted(type_set) or None, "repo": repo},
+                      "relationship_types": sorted(type_set) or None, "repo": repo,
+                      "statuses": sorted(wanted) or None},
             "candidates": candidate_list,
             "ambiguous": len({(c["type"], c.get("namespace")) for c in candidate_list}) > 1,
             "relationships": edge_list,
             "related": related,
             "count": len(related),
             "evidence_status": _evidence_status(edge_list, related),
-            "notice": UNTRUSTED_NOTICE,
+            "notice": UNTRUSTED_NOTICE + " " + STATUS_NOTICE,
         }
         self._audit("find_related", principal, "allowed", started,
                     result_count=len(related), edge_count=len(edge_list))
@@ -506,16 +530,7 @@ def _type_compatible(wanted: str | None, actual: str | None) -> bool:
 
 
 def _newest_generation(sources: list[dict]) -> list[dict]:
-    """If two generations of a document are briefly visible, keep only the newest."""
-    generations = {s.get("generation") for s in sources}
-    if len(generations) <= 1:
-        return sources
-
-    def newest(gen):  # noqa: ANN001, ANN202
-        return max((s.get("indexed_at") or "") for s in sources if s.get("generation") == gen)
-
-    keep = max(generations, key=lambda g: (newest(g), g or ""))
-    return [s for s in sources if s.get("generation") == keep]
+    return newest_generation(sources)
 
 
 def _add_edge(edges: dict, direction: str, rel: Any, result: SearchResult) -> None:
@@ -529,50 +544,74 @@ def _add_edge(edges: dict, direction: str, rel: Any, result: SearchResult) -> No
             "type": rel.type,
             "target": rel.target,
             "target_type": rel.target_type,
+            "status": None,
             "origins": [],
-            "support": {"documents": 0, "explicit": 0, "llm_grounded": 0, "llm_ungrounded": 0},
+            "support": {"documents": 0, "explicit": 0, **dict.fromkeys(STATUS_ORDER, 0)},
             "evidence": [],
             "_docs": set(),
         }
         edges[key] = edge
     if rel.origin not in edge["origins"]:
         edge["origins"].append(rel.origin)
-    if result.document_id not in edge["_docs"]:
-        edge["_docs"].add(result.document_id)
-        edge["support"]["documents"] += 1
-        if rel.origin == _EXPLICIT:
-            edge["support"]["explicit"] += 1
-        elif rel.grounded:
-            edge["support"]["llm_grounded"] += 1
-        else:
-            edge["support"]["llm_ungrounded"] += 1
-        if rel.evidence:
-            for ev in rel.evidence:
-                edge["evidence"].append({k: v for k, v in {
-                    **ev.model_dump(exclude_none=True),
-                    "document_id": ev.document_id or result.document_id,
-                    "origin": rel.origin,
-                }.items() if v is not None})
-        else:
-            # Only the document is known: say so rather than inventing a location.
-            edge["evidence"].append({
-                **_evidence_of(result),
-                "line_start": None,
-                "line_end": None,
-                "locator": "document",
-                "origin": rel.origin,
-                "grounded": rel.grounded,
-            })
+    if result.document_id in edge["_docs"]:
+        return
+    edge["_docs"].add(result.document_id)
+    status = rel.status or RelationshipStatus.CLAIMED.value  # pre-status data: a claim
+    edge["support"]["documents"] += 1
+    edge["support"][status] = edge["support"].get(status, 0) + 1
+    if rel.origin == _EXPLICIT:
+        edge["support"]["explicit"] += 1
+    common = {
+        "origin": rel.origin,
+        "status": status,
+        "assertion": rel.assertion,
+        "as_of": rel.as_of.isoformat() if rel.as_of else None,
+        "source_state": result.state,
+        "mention_found": rel.mention_found,
+        "quote_verified": rel.quote_verified,
+    }
+    if rel.evidence:
+        for ev in rel.evidence:
+            edge["evidence"].append({k: v for k, v in {
+                **ev.model_dump(exclude_none=True),
+                "document_id": ev.document_id or result.document_id,
+                **common,
+            }.items() if v is not None})
+    else:
+        # Only the document is known: say so rather than inventing a location.
+        edge["evidence"].append({k: v for k, v in {
+            **_evidence_of(result), "locator": "document", **common,
+        }.items() if v is not None} | {"line_start": None, "line_end": None})
+
+
+def _finalize_edges(edges: dict) -> None:
+    """Overall status per edge, conflicts, and whether current configuration disagrees."""
+    for edge in edges.values():
+        edge.pop("_docs", None)
+        edge["status"], edge["conflicting_evidence"] = aggregate_status(edge["evidence"])
+        edge["evidence"].sort(key=lambda e: (STATUS_ORDER.index(e["status"]),
+                                             str(e.get("as_of") or "")), reverse=False)
+    # Configuration that lists an entity's dependencies (e.g. docker-compose depends_on) is
+    # the current state: claims about *other* targets of the same type are flagged.
+    configured = {
+        (normalize_name(e["source"] or ""), e["type"], e["direction"])
+        for e in edges.values() if e["status"] == RelationshipStatus.CURRENT.value and e["source"]
+    }
+    for edge in edges.values():
+        if edge["status"] != RelationshipStatus.CURRENT.value and edge["source"]:
+            key = (normalize_name(edge["source"]), edge["type"], edge["direction"])
+            if key in configured:
+                edge["absent_from_current_config"] = True
 
 
 def _evidence_status(edges: list[dict], related: list[dict]) -> str:
+    """The strongest kind of evidence among the returned relationships."""
     if not edges:
         return "mentions_only" if related else "none"
-    if any(e["support"]["explicit"] for e in edges):
-        return "explicit"
-    if any(e["support"]["llm_grounded"] for e in edges):
-        return "llm_grounded"
-    return "llm_ungrounded"
+    for status in STATUS_ORDER:
+        if any(e["status"] == status for e in edges):
+            return status
+    return "claimed"
 
 
 def _excerpt(text: str, title: str, line_start: int, line_end: int | None) -> dict:

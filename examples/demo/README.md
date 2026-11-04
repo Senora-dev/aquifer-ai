@@ -14,10 +14,10 @@ database. Before touching anything, the agent needs to know what depends on `bil
 git clone https://github.com/Senora-dev/aquifer-ai.git && cd aquifer-ai
 python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 python -m aquifer.local ingest examples/demo/repos
-# indexed=17 unchanged=0 failed=0 deleted=0 store=.aquifer-local/index.json
+# indexed=20 unchanged=0 failed=0 deleted=0 store=.aquifer-local/index.json
 ```
 
-Run the ingest again: `indexed=0 unchanged=17` — re-syncing is idempotent and free.
+Run the ingest again: `indexed=0 unchanged=20` — re-syncing is idempotent and free.
 
 ## 0:30 — Connect the agent (30 s)
 
@@ -77,5 +77,5 @@ Delete `docs/adr/0007-ledger-on-postgres.md` and re-sync: it disappears from sea
 
 Local mode uses a lexical embedder and no LLM, so prose-only facts — e.g. issue #12's
 "checkout-service depends on billing-api" — are not extracted. A deployment (or
-`ingest --bedrock`) adds them, labelled `llm_extracted` with `grounded: true` and the line of the
+`ingest --bedrock`) adds them, labelled `llm_extracted` with `status: claimed`, a verified quote and the line of the
 mention.

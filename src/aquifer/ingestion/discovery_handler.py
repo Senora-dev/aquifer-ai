@@ -23,7 +23,7 @@ from datetime import UTC, datetime, timedelta
 
 from aquifer.core.config import Settings, get_settings
 from aquifer.core.errors import configure_lambda_logging, log_event
-from aquifer.core.models import Source, SourceType
+from aquifer.core.models import DocumentKind, FetchJob, Source, SourceType
 from aquifer.ingestion import aws
 from aquifer.ingestion.factory import build_connector, build_vector_store
 
@@ -69,9 +69,70 @@ def purge_unlisted_repos(settings: Settings, vector_store=None) -> int:  # noqa:
     return removed
 
 
+def _repo_and_kind(document_id: str) -> tuple[str, str]:
+    """``github:owner/repo:kind:external`` → (owner/repo, kind)."""
+    parts = document_id.split(":")
+    if len(parts) >= 4:
+        return parts[1], parts[2]
+    return "*", DocumentKind.FILE.value
+
+
+def enqueue_failed_retries(settings: Settings, vector_store=None) -> int:  # noqa: ANN001
+    """Manual recovery: re-run extraction for every document marked ``failed``."""
+    store = vector_store or build_vector_store(settings)
+    ids = sorted(store.list_document_ids({"extraction_status": "failed"}) or [])
+    size = max(1, settings.ingestion.retry_job_size)
+    for i in range(0, len(ids), size):
+        repo, kind = _repo_and_kind(ids[i])
+        try:
+            kind_value = DocumentKind(kind)
+        except ValueError:
+            kind_value = DocumentKind.FILE
+        aws.enqueue_job(settings.ingestion.queue_url, FetchJob(
+            source_id="retry", source_type=SourceType.GITHUB, repo=repo, kind=kind_value,
+            job_type="reprocess_failed", document_ids=ids[i : i + size]))
+    log_event(logger, "failed_extraction_requeued", documents=len(ids))
+    return len(ids)
+
+
+def enqueue_due_retries(settings: Settings, vector_store=None, now=None) -> dict:  # noqa: ANN001
+    """Queue re-processing for documents whose extraction is due for a retry.
+
+    This is the primary recovery path for failed extraction: it needs no change in the source
+    and no re-fetch (documents are rebuilt from the index). Also reports the backlog by status.
+    """
+    store = vector_store or build_vector_store(settings)
+    now = now or datetime.now(UTC)
+    due = store.documents_due_for_retry(now, limit=settings.ingestion.retry_sweep_limit) or []
+    groups: dict[tuple[str, str], list[str]] = {}
+    for doc_id in due:
+        groups.setdefault(_repo_and_kind(doc_id), []).append(doc_id)
+    jobs = 0
+    size = max(1, settings.ingestion.retry_job_size)
+    for (repo, kind), ids in groups.items():
+        for i in range(0, len(ids), size):
+            try:
+                kind_value = DocumentKind(kind)
+            except ValueError:
+                kind_value = DocumentKind.FILE
+            aws.enqueue_job(settings.ingestion.queue_url, FetchJob(
+                source_id="retry", source_type=SourceType.GITHUB, repo=repo, kind=kind_value,
+                job_type="reprocess", document_ids=ids[i : i + size]))
+            jobs += 1
+    backlog = dict(store.facet("extraction_status", None, size=20) or [])
+    errors = dict(store.facet("extraction_error", None, size=20) or [])
+    log_event(logger, "extraction_backlog", due_for_retry=len(due), retry_jobs=jobs,
+              by_status=backlog, by_error=errors)
+    return {"due_for_retry": len(due), "retry_jobs": jobs, "by_status": backlog,
+            "by_error": errors}
+
+
 def handler(event=None, context=None) -> dict:  # noqa: ANN001 - Lambda signature
     settings = get_settings()
     configure_lambda_logging(settings.log_level)
+    if isinstance(event, dict) and event.get("retry_failed"):
+        # Operator action after fixing a cause (e.g. a model or prompt): fresh retry budget.
+        return {"requeued_failed": enqueue_failed_retries(settings)}
     ingestion = settings.ingestion
     run_started = datetime.now(UTC)
 
@@ -98,8 +159,12 @@ def handler(event=None, context=None) -> dict:  # noqa: ANN001 - Lambda signatur
                   since=since.isoformat() if since else None)
 
     purged = 0
-    if ingestion.purge_unlisted_repos and settings.vector_store.endpoint:
-        purged = purge_unlisted_repos(settings)
+    retries: dict = {}
+    if settings.vector_store.endpoint:
+        if ingestion.purge_unlisted_repos:
+            purged = purge_unlisted_repos(settings)
+        retries = enqueue_due_retries(settings)
 
-    log_event(logger, "discovery_complete", enqueued=enqueued, repos_purged=purged)
-    return {"enqueued": enqueued, "repos_purged": purged}
+    log_event(logger, "discovery_complete", enqueued=enqueued, repos_purged=purged,
+              retry_jobs=retries.get("retry_jobs"))
+    return {"enqueued": enqueued, "repos_purged": purged, "extraction": retries}

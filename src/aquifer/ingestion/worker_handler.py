@@ -24,7 +24,12 @@ import logging
 import time
 
 from aquifer.core.config import Settings, get_settings
-from aquifer.core.errors import RateLimitedError, configure_lambda_logging, log_event
+from aquifer.core.errors import (
+    RateLimitedError,
+    SourceAuthError,
+    configure_lambda_logging,
+    log_event,
+)
 from aquifer.core.hooks import get_pipeline
 from aquifer.core.models import FetchJob, SourceType
 from aquifer.ingestion import aws
@@ -74,6 +79,31 @@ def _pipeline_for(source_type: SourceType, settings: Settings) -> IngestionPipel
     return _pipeline_cache[key][1]
 
 
+def _invalidate_credentials() -> None:
+    """Forget cached tokens and pipelines so the next use re-reads the secret."""
+    _token_cache.clear()
+    _pipeline_cache.clear()
+
+
+def _run(job: FetchJob, settings: Settings) -> FetchJob | None:
+    pipeline = _pipeline_for(job.source_type, settings)
+    if job.job_type in {"reprocess", "reprocess_failed"}:
+        pipeline.reprocess(job.document_ids, include_failed=job.job_type == "reprocess_failed")
+        return None
+    return pipeline.process_job(job)
+
+
+def _run_with_fresh_credentials(job: FetchJob, settings: Settings) -> FetchJob | None:
+    try:
+        return _run(job, settings)
+    except SourceAuthError:
+        # The token may have been rotated since this warm container cached it: re-read the
+        # secret once before failing the job.
+        log_event(logger, "source_auth_retry", level=logging.WARNING, repo=job.repo)
+        _invalidate_credentials()
+        return _run(job, settings)
+
+
 def handler(event, context=None) -> dict:  # noqa: ANN001 - Lambda signature
     settings = get_settings()
     configure_lambda_logging(settings.log_level)
@@ -81,9 +111,8 @@ def handler(event, context=None) -> dict:  # noqa: ANN001 - Lambda signature
     requeued = 0
     for record in event.get("Records", []):
         job = FetchJob.model_validate_json(record["body"])
-        pipeline = _pipeline_for(job.source_type, settings)
         try:
-            successor = pipeline.process_job(job)
+            successor = _run_with_fresh_credentials(job, settings)
         except RateLimitedError as exc:
             if job.attempt >= settings.ingestion.max_rate_limit_requeues:
                 log_event(logger, "rate_limit_requeues_exhausted", level=logging.ERROR,

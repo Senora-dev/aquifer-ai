@@ -207,8 +207,11 @@ def test_replace_document_writes_new_generation_before_deleting_old():
         {"_id": "new", "_source": {"generation": "g2"}},
     ]
     client = FakeOpenSearch(scan_hits=hits)
-    _store(client).replace_document("github:o/r:issue:1", [_chunk(0, "g2")])
-    # First bulk = the new chunks; second = deletion of every other generation.
+    from datetime import datetime
+
+    newer = _chunk(0, "g2", updated_at=datetime.fromisoformat("2024-02-01T00:00:00+00:00"))
+    _store(client).replace_document("github:o/r:issue:1", [newer])
+    # First bulk = the new chunks; second = deletion of every lower-ranked generation.
     assert client.bulk_bodies[0][0] == {"index": {"_index": "ctx"}}
     deleted = {a["delete"]["_id"] for a in client.bulk_bodies[1]}
     assert deleted == {"old", "legacy"}

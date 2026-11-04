@@ -15,6 +15,17 @@
     "state": "open",
     "created_at": "2024-06-01T10:00:00Z",
     "updated_at": "2024-06-02T08:00:00Z",
-    "labels": ["proposal"]
+    "labels": [
+      "proposal"
+    ]
+  },
+  {
+    "number": 42,
+    "title": "Switch billing-api invoice events to kafka",
+    "body": "billing-api would publish invoice events to kafka instead of SQS.\nClosed: we decided to keep SQS.",
+    "state": "closed",
+    "created_at": "2024-04-01T10:00:00Z",
+    "updated_at": "2024-04-03T10:00:00Z",
+    "labels": []
   }
 ]

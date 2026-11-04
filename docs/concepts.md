@@ -87,17 +87,42 @@ only when the source provides them; nothing is inferred to make a response look 
 | `indexed_at`, `fetched_at` | When Aquifer read and indexed the content |
 | `state` | Issue/PR state: `open`, `closed`, `merged` (a merged PR vs an open proposal) |
 
-### Relationship origin
+### Mentions, claims, proposals and current state
 
-| Origin | Produced by | Trust |
+Aquifer keeps four things apart: what a source **mentions**, what it **claims**, what is
+**proposed**, and what is **observed in current configuration**. Every relationship carries:
+
+| Field | Meaning |
+| --- | --- |
+| `origin` | `explicit_reference` (deterministic parser: Terraform, docker-compose `depends_on`, Backstage relations) or `llm_extracted` (model over prose: READMEs, issues, PRs, ADRs) |
+| `assertion` | What the text does with it: `present`, `added`, `removed`, `proposed`, `discussed`, `negated`. "From memcached to redis" is *two* relationships: memcached `removed`, redis `added` |
+| `status` | What Aquifer can say about it (table below) |
+| `as_of` | When the source made the statement: a PR's merge time, an issue's update time, a file revision's commit time |
+| `quote_verified` | LLM only: the sentence the model cited occurs verbatim in the source; it is the evidence line (`locator: quote`) |
+| `mention_found` | LLM only: the target's name occurs in the text. **Only a mention — not evidence that the relationship is true** |
+
+| `status` | Set when | Describes the current system? |
 | --- | --- | --- |
-| `explicit_reference` | Deterministic parsers: Terraform references and module sources, docker-compose `depends_on`, Backstage `dependsOn` / `consumesApis` / `providesApis` / `system` / `owner` | Stated in structured source at the cited line |
-| `llm_extracted` | The LLM extractor over prose (READMEs, issues, PRs, ADRs) | Not verified. `grounded: true` means the target name occurs in the text (evidence = that line, `locator: text_match`); `grounded: false` means it does not |
+| `current` | Parsed from structured configuration at the indexed revision | **Yes** (as of that revision) |
+| `claimed` | A document states it holds or was added (merged PR, issue, README, ADR) | A claim, as of `as_of` |
+| `removed` | A document states it was removed / no longer holds | A claim that it does not hold |
+| `absent` | A document states it does not hold ("does not depend on X") | A claim that it does not hold |
+| `proposed` | Proposed or planned, or any change in an **open** PR | No |
+| `not_merged` | Stated by a PR closed without merging | No |
+| `discussed` | An option, question or hypothetical | No |
 
-`find_related` reports each relationship once with `support` counts — how many documents state
-it explicitly, how many as grounded or ungrounded LLM extractions — so an agent can tell a fact
-stated in two descriptors from a single model guess. Co-occurrence of two names in a document
-is never reported as a relationship.
+`find_related` reports each relationship once, with all evidence and an overall `status`:
+
+1. Configuration wins: if any evidence is `current`, the edge is `current` — a document's claim
+   (even a newer PR) does not override what configuration states.
+2. Otherwise the most recent claim wins (`claimed` vs `removed`/`absent`, by `as_of`).
+3. Otherwise `proposed` > `not_merged` > `discussed`.
+
+`conflicting_evidence: true` marks edges where some evidence affirms and other evidence denies.
+`absent_from_current_config: true` marks a claim about an entity whose dependencies of that type
+*are* listed in current configuration, without this one. `support` counts documents per status.
+Pass `statuses=["current"]` to get configuration-observed relationships only. Results list
+`current` edges first. Co-occurrence of two names in a document is never a relationship.
 
 ### Entity identity
 

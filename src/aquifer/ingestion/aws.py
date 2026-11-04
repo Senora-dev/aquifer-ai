@@ -11,7 +11,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from aquifer.core.models import FetchJob
+from aquifer.core.models import INDEX_FORMAT_VERSION, FetchJob
 
 
 def _client(service: str, region: str | None = None) -> Any:
@@ -55,6 +55,11 @@ def read_watermark(
             return None
         raise
     payload = json.loads(obj["Body"].read())
+    # A watermark written under a different index format would skip unchanged issues/PRs that
+    # must be re-extracted; treat it as "never ran" (one full sync, unchanged content is still
+    # skipped by hash).
+    if payload.get("index_format") != INDEX_FORMAT_VERSION:
+        return None
     value = payload.get("since")
     return datetime.fromisoformat(value) if value else None
 
@@ -67,6 +72,7 @@ def write_watermark(
     client.put_object(
         Bucket=bucket,
         Key=key,
-        Body=json.dumps({"since": since.isoformat()}).encode(),
+        Body=json.dumps({"since": since.isoformat(),
+                         "index_format": INDEX_FORMAT_VERSION}).encode(),
         ContentType="application/json",
     )

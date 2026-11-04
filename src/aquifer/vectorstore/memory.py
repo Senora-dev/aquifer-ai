@@ -21,8 +21,11 @@ from aquifer.core.models import IndexedState, SearchResult
 from aquifer.vectorstore.schema import (
     DATE_FIELDS,
     FILTERABLE_FIELDS,
+    chunk_rank,
     chunk_to_source,
+    generation_rank,
     matches_filters,
+    retry_due_record,
     source_to_result,
     validate_filters,
 )
@@ -72,18 +75,13 @@ class InMemoryVectorStore(VectorStore):
             self.delete_by_document(document_id)
             return
         self.upsert(chunks)
-        generation = chunks[0].generation
-        updated_at = chunks[0].updated_at
+        ours = chunk_rank(chunks[0])
         with self._lock:
             for rid, rec in list(self._records.items()):
-                if rec.get("document_id") != document_id:
-                    continue
-                if generation is not None and rec.get("generation") == generation:
-                    continue
-                their = rec.get("updated_at")
-                if updated_at is not None and their and their > updated_at.isoformat():
-                    continue
-                del self._records[rid]
+                if (rec.get("document_id") == document_id
+                        and rec.get("generation") != chunks[0].generation
+                        and generation_rank(rec) < ours):
+                    del self._records[rid]
             self._save()
 
     def delete_by_filter(self, filters: dict) -> int:
@@ -155,8 +153,21 @@ class InMemoryVectorStore(VectorStore):
                 content_hash=r.get("content_hash"),
                 updated_at=r.get("updated_at"),
                 extraction_status=r.get("extraction_status"),
+                extraction_attempts=r.get("extraction_attempts") or 0,
+                extraction_error=r.get("extraction_error"),
+                next_retry_at=r.get("next_retry_at"),
             )
         return out
+
+    def get_document_vectors(self, document_id: str) -> dict[str, list[float]]:
+        return {r["text"]: r["vector"] for _, r in self._matching({"document_id": document_id})
+                if r.get("vector")}
+
+    def documents_due_for_retry(self, now, limit: int = 200) -> list[str] | None:  # noqa: ANN001
+        now_iso = now.isoformat()
+        ids = sorted({r["document_id"] for r in self._records.values()
+                      if r.get("document_id") and retry_due_record(r, now_iso)})
+        return ids[:limit]
 
     def list_document_ids(self, filters: dict, limit: int = 10_000) -> set[str] | None:
         ids = sorted({r.get("document_id") for _, r in self._matching(filters)} - {None})

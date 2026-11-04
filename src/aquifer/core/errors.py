@@ -155,3 +155,6 @@ def configure_lambda_logging(level: str) -> None:
     which would silently drop ``job_processed`` and the other INFO events.
     """
     logging.getLogger().setLevel(level.upper())
+    # Request-level chatter from HTTP clients is not operational signal.
+    for noisy in ("httpx", "httpcore", "urllib3", "botocore", "opensearch"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)

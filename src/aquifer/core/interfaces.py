@@ -126,8 +126,20 @@ class VectorStore(ABC):
                     content_hash=head.get("content_hash"),
                     updated_at=head.get("updated_at"),
                     extraction_status=head.get("extraction_status"),
+                    extraction_attempts=head.get("extraction_attempts") or 0,
+                    extraction_error=head.get("extraction_error"),
+                    next_retry_at=head.get("next_retry_at"),
                 )
         return out
+
+    def get_document_vectors(self, document_id: str) -> dict[str, list[float]]:
+        """``{chunk text: vector}`` of a document's indexed chunks, so re-processing unchanged
+        text does not re-embed it. Default: nothing to reuse."""
+        return {}
+
+    def documents_due_for_retry(self, now, limit: int = 200) -> list[str] | None:  # noqa: ANN001
+        """Ids of documents whose extraction is due for a retry; ``None`` if unsupported."""
+        return None
 
     def delete_documents(self, document_ids: Sequence[str]) -> None:
         for doc_id in document_ids:

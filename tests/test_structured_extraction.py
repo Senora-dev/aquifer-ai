@@ -35,7 +35,7 @@ def test_terraform_references_have_exact_lines_and_explicit_origin():
     meta = extract_structured(_file("envs/prod/main.tf", TF))
     edges = _edges(meta)
     ref = edges[("module.billing", "references", "aws_db_instance.payments")]
-    assert ref.origin == "explicit_reference" and ref.grounded is True
+    assert ref.origin == "explicit_reference" and ref.status == "current"
     ev = ref.evidence[0]
     assert (ev.line_start, ev.line_end, ev.revision, ev.path) == (4, 4, "abc123",
                                                                    "envs/prod/main.tf")
@@ -120,21 +120,33 @@ def test_unrecognized_or_malformed_yaml_is_ignored():
     assert extract_structured(_file("README.md", "billing-api depends on x")) is None
 
 
-def test_llm_relationships_are_grounded_against_text_or_flagged():
+def test_llm_relationships_are_checked_against_text_without_claiming_truth():
     doc = Document(id="d", source_type=SourceType.GITHUB, external_id="o/r#1",
                    kind=DocumentKind.ISSUE, repo="o/r", title="Timeouts",
                    body="Intro\nbilling-api now calls payments-db for refunds\nend")
     meta = SemanticMetadata(relationships=[
         Relationship(type="depends_on", source="billing-api", target="payments-db",
-                     origin="explicit_reference"),  # the model can't claim explicit origin
-        Relationship(type="depends_on", target="kafka"),  # not in the text
+                     origin="explicit_reference",  # the model can't claim explicit origin
+                     quote="billing-api now calls payments-db for refunds"),
+        Relationship(type="depends_on", target="kafka", quote="uses kafka"),  # not in text
     ])
     ground_llm_metadata(meta, doc)
-    grounded, ungrounded = meta.relationships
-    assert grounded.origin == "llm_extracted" and grounded.grounded is True
-    assert grounded.evidence[0].line_start == 2
-    assert grounded.evidence[0].locator == "text_match"
-    assert ungrounded.grounded is False and ungrounded.evidence == []
+    quoted, unsupported = meta.relationships
+    assert quoted.origin == "llm_extracted" and quoted.status == "claimed"
+    assert quoted.quote_verified is True and quoted.mention_found is True
+    assert (quoted.evidence[0].line_start, quoted.evidence[0].locator) == (2, "quote")
+    assert unsupported.quote_verified is False and unsupported.mention_found is False
+    assert unsupported.evidence == []
+
+
+def test_mention_without_quote_falls_back_to_text_match_line():
+    doc = Document(id="d", source_type=SourceType.GITHUB, external_id="o/r#1",
+                   kind=DocumentKind.ISSUE, repo="o/r", title="t",
+                   body="line one\nwe looked at kafka last year")
+    meta = SemanticMetadata(relationships=[Relationship(type="mentions", target="kafka")])
+    rel = ground_llm_metadata(meta, doc).relationships[0]
+    assert rel.mention_found is True and rel.quote_verified is False
+    assert (rel.evidence[0].line_start, rel.evidence[0].locator) == (2, "text_match")
 
 
 def test_merge_prefers_explicit_reference_on_overlap():
