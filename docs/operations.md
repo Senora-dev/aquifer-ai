@@ -129,7 +129,9 @@ runtime except LLM extraction.
 `cdk deploy` with a newer version rolls the Lambdas and the MCP service (ECS circuit breaker
 rolls back a failing deployment). New index fields are added to an existing index
 automatically. Changes that alter chunking or extraction bump `INDEX_FORMAT_VERSION`, which makes
-each document re-index the next time it is fetched; to force a full rebuild, deploy with a new
+each document re-index the next time it is fetched, and the next discovery run ignores
+the incremental watermark once (watermarks record the format version) so unchanged issues and
+pull requests are fetched and re-extracted too; to force a full rebuild, deploy with a new
 `-c index=<name>` and delete the old index afterwards.
 
 ## Troubleshooting
