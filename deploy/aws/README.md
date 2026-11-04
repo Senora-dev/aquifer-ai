@@ -169,8 +169,9 @@ checks look for their content. Reports go to `.build/e2e-report.json` and
 
 ## For AI agents
 
-Follow the steps above. Rules:
-- Run `plan` and show the user the resource list and cost before `up`.
-- Never run `down` unless the user asks.
-- If `check` reports expired AWS credentials, ask the user to run `aws sso login`.
-- Every command prints `==>` headings, `✓`/`✗` results and `KEY=value` lines.
+Follow the agent runbook in [AGENTS.md](../../AGENTS.md#setting-aquifer-up-for-a-user-agent-runbook).
+It lists:
+- the decisions to ask the user about: repositories, tools, and shared access
+- the points where you must stop: AWS login, Bedrock console access, cost approval, OAuth
+  clicks (relay `AUTH_URL=`), and preview approval
+- what "done" means, and how to handle common errors
