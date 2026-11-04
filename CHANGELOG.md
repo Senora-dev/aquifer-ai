@@ -28,6 +28,9 @@ All notable changes to this project are documented here. The format follows
   prompts for release notes, tickets and pages.
 
 ### Fixed
+- OAuth requested the scopes the server advertised (Linear: `read write`) instead of the
+  configured least-privilege scope (`read`). Registration and authorization now keep the
+  configured scope.
 - A paused source's (or a disabled scope's) documents could have been readable when no GitHub
   repositories were configured; the scope guard now denies everything when sources are managed
   and none is enabled.

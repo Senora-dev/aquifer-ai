@@ -66,6 +66,7 @@ def settings(tmp_path):
         semantic_index=SemanticIndexSettings(enabled=False),
         node=NodeSettings(data_dir=str(tmp_path), job_max_attempts=3, job_retry_base_s=0),
         integrator=IntegratorSettings(allow_private_networks=True, min_call_interval_s=0,
+                                      authorize_timeout_s=20,
                                       overlap_s=0, public_url="http://127.0.0.1:9"),
     )
 
@@ -384,6 +385,7 @@ def _authorize(settings, source_name: str) -> dict:
     """Run the mcp_authorize job; act as the browser (follow the URL, deliver the callback)."""
     reg = jobs.registry_for(settings)
     request_id = reg.oauth_begin(source_name)
+    jobs.register()
     service = NodeService(settings)
     service.queue.put("mcp_authorize", {"source": source_name, "request_id": request_id})
     worker = threading.Thread(target=service.run_once)
@@ -489,3 +491,25 @@ def test_stream_proposal_from_a_sample_call(settings):
         "cursor", "after", "pageInfo.endCursor")
     assert stream.ordered_by_updated_desc is True
     assert stream.enumeration == "partial"  # completeness is the operator's call
+
+
+def test_configured_oauth_scope_is_not_widened_by_the_server(settings):
+    """Linear advertises "read write"; a source configured with "read" must request only read."""
+    oauth = FakeOAuth()
+    seen_scopes = []
+    original = oauth.authorize
+
+    async def recording(client, params):
+        seen_scopes.append(params.scopes)
+        return await original(client, params)
+
+    oauth.authorize = recording
+    data = Data()
+    data.add(1, "a", T1)
+    with FakeServer(data, auth="oauth", oauth=oauth) as srv:
+        reg = jobs.registry_for(settings)
+        ref = jobs.credentials_ref(settings, "tracker", "oauth")
+        reg.save(_source(srv.url, auth=AuthConfig(type="oauth", secret_ref=ref, scope="read"),
+                         state="needs_authorization"))
+        assert _authorize(settings, "tracker")["status"] == "succeeded"
+    assert seen_scopes == [["read"]]

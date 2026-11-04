@@ -476,6 +476,7 @@ def cmd_sync(args) -> int:  # noqa: ANN001
                                      dedupe_key=f"mcp_sync:{source.name}")
     print("sync queued" if added else "a sync of this source is already queued",
           file=sys.stderr)
+    print(f"SYNC_QUEUED={int(added)}")
     return 0
 
 

@@ -31,7 +31,6 @@ import sys
 import time
 import uuid
 import warnings
-from datetime import datetime
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 results: list[dict] = []
@@ -67,24 +66,38 @@ def source_status(cli: str, source: str) -> dict:
     return json.loads(aquifer(cli, "sources", "status", source, "--json"))[0]
 
 
-def wait_run(cli: str, source: str, since: float, *, want=("succeeded", "partial", "failed"),
-             timeout: int = 420) -> dict:
-    """The first finished run started after ``since`` whose status is in ``want``."""
+def _last_run_id(cli: str, source: str) -> str | None:
+    return (source_status(cli, source).get("last_run") or {}).get("run_id")
+
+
+def wait_run(cli: str, source: str, after: str | None, *,
+             want=("succeeded", "partial", "failed"), timeout: int = 420) -> dict:
+    """The newest run other than ``after``, once finished with a status in ``want``. Runs are
+    identified by the server's run id: the local clock may differ from the server's."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         run = source_status(cli, source).get("last_run") or {}
-        started = run.get("started_at")
-        if (started and run.get("status") in want
-                and datetime.fromisoformat(started).timestamp() >= since - 5):
+        if run.get("run_id") and run["run_id"] != after and run.get("status") in want:
             return run
         time.sleep(3)
     raise TimeoutError(f"no {want} run of {source} within {timeout}s")
 
 
+def trigger(cli: str, source: str, *, full: bool = False, timeout: int = 420) -> str | None:
+    """Queue a run of our own (waiting out one already queued). Returns the id of the run that
+    was newest before ours, for :func:`wait_run`."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        before = _last_run_id(cli, source)
+        out = aquifer(cli, "sources", "sync", source, *(["--full"] if full else []))
+        if "SYNC_QUEUED=1" in out:
+            return before
+        time.sleep(5)
+    raise TimeoutError("could not queue a sync (another one stayed queued)")
+
+
 def sync(cli: str, source: str, *, full: bool = False) -> dict:
-    since = time.time()
-    aquifer(cli, "sources", "sync", source, *(["--full"] if full else []))
-    return wait_run(cli, source, since)
+    return wait_run(cli, source, trigger(cli, source, full=full))
 
 
 async def _mcp(url: str, token: str, tool: str, **kw) -> object:
@@ -201,26 +214,24 @@ def main() -> int:  # noqa: PLR0915
         # 4. retries during a network fault ---------------------------------------------
         if args.fault_on and args.fault_off:
             run_cmd(args.fault_on)
-            since = time.time()
-            aquifer(args.aquifer, "sources", "sync", args.source)
-            failed = wait_run(args.aquifer, args.source, since, want=("failed",), timeout=240)
+            before = trigger(args.aquifer, args.source)
+            failed = wait_run(args.aquifer, args.source, before, want=("failed",), timeout=240)
             check("retry: run during the fault fails as transient (source_unavailable)",
                   "source_unavailable" in (failed.get("error") or ""), failed)
-            healed = time.time()
             run_cmd(args.fault_off)
-            run = wait_run(args.aquifer, args.source, healed, want=("succeeded",), timeout=420)
+            run = wait_run(args.aquifer, args.source, failed["run_id"], want=("succeeded",),
+                           timeout=420)
             check("retry: the queued job is retried and succeeds after the fault",
                   run["status"] == "succeeded", run)
 
         # 5. crash mid-run --------------------------------------------------------------
         if args.crash:
-            since = time.time()
-            aquifer(args.aquifer, "sources", "sync", args.source, "--full")
+            before = trigger(args.aquifer, args.source, full=True)
             out = run_cmd(args.crash)
             recovered = next((int(line.split("=", 1)[1]) for line in out.splitlines()
                               if line.startswith("RECOVERED=")), 0)
             check("restart: interrupted jobs were recovered after the crash", recovered >= 1, out)
-            run = wait_run(args.aquifer, args.source, since, timeout=600)
+            run = wait_run(args.aquifer, args.source, before, timeout=600)
             check("restart: the interrupted run completed", run["status"] == "succeeded", run)
             check("restart: every item still present exactly once",
                   all(find(args, f"zebra{i}-{marker}") for i in range(args.discussions)), "")

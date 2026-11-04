@@ -144,6 +144,14 @@ which validates access end to end. Revoke the old token on GitHub afterwards.
 ./aquifer-aws test-updates  # commits a change and a deletion to GitHub, re-syncs, verifies, reverts
 ```
 
+`./aquifer-aws test-integrator` runs the full MCP Integrator check against GitHub's MCP server:
+- import, retrieval, unchanged runs, updates and deletions
+- retries during an injected network fault
+- recovery after `kill -9` mid-run
+
+Its mutations go only to a dedicated fixture repository (see
+[docs/integrator.md](../../docs/integrator.md#test-fixtures)).
+
 `test` and `test-updates` expect the synthetic repositories created by `./aquifer-aws seed`; the
 checks look for their content. Reports go to `.build/e2e-report.json` and
 `.build/e2e-updates.json`.

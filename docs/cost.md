@@ -145,6 +145,47 @@ of *changes*, not the size of the corpus. Configuration files never call the LLM
 Choose the scale profile when you need multi-AZ availability, well over ~50,000 chunks, or
 private-only networking with VPC endpoints.
 
+## Budget verification: the complete default deployment
+
+The agreed ceiling is **$50 a month of baseline infrastructure**. The check below covers every
+resource the default deployment needs, including the MCP Integrator. It is not the hourly price
+of a test run. The inventory is the Terraform state of the validation deployment on 2026-11-04
+(`terraform show`), plus everything Aquifer creates at runtime.
+
+| Resource (as deployed) | Count | Billing basis | Typical / month | Worst case / month |
+| --- | --- | --- | --- | --- |
+| EC2 t4g.small, CPU credits `standard` | 1 | $0.0184/hour; `standard` credits cannot add surplus charges | $13.43 | $13.43 |
+| gp3 root volume, 8 GiB (3,000 IOPS and 125 MB/s are included at no charge) | 1 | $0.088/GB-month | $0.70 | $0.70 |
+| gp3 data volume, 10 GiB | 1 | $0.088/GB-month | $0.88 | $0.88 |
+| Elastic IP (public IPv4) | 1 | $0.005/hour | $3.65 | $3.65 |
+| EBS snapshots (DLM, daily, 7 kept) | ≤ 7 | $0.05/GB-month of changed blocks | $0.25 (≈ 5 GB) | $4.00 (full 10 GiB plus 7 days of full churn) |
+| CloudWatch Logs, 30-day retention | 1 group | $0.57/GB ingested + $0.03/GB stored | $0.05 (measured rate: ~17 MB/month for 3 repos) | $1.20 (2 GB) |
+| SSM parameters: config, GitHub token, MCP tokens | 3 | standard tier | $0 | $0 |
+| SSM parameters: MCP source credentials | 1 per source | standard ≤ 4 KB; OAuth documents may tier to advanced at $0.05 each | $0 | $0.50 (10 sources) |
+| KMS (`aws/ssm` AWS-managed key) | — | no monthly fee; decrypt requests within the 20,000/month free tier (~10,000/month at a 15-minute GitHub sync plus daily Integrator runs) | $0 | $0.03 |
+| S3 artifact bucket (one 178 KB wheel) | 1 | $0.023/GB-month | < $0.01 | < $0.01 |
+| VPC, subnet, internet gateway, route table, security group, IAM roles, DLM policy | 9 | free | $0 | $0 |
+| Data transfer out | — | the first 100 GB/month is free; MCP responses are KB-sized | $0 | $0 |
+| **MCP Integrator** | — | runs inside the same process: no resources of its own | $0 | $0 |
+| **Total baseline** | | | **≈ $19** | **≈ $24.40** |
+
+The worst case stays under half the $50 ceiling. Upsizing to t4g.medium (4 GiB, +$13.43) for a
+larger index gives at most ≈ $38. A deployment exceeds $50 only if someone changes the design,
+for example by switching CPU credits to `unlimited` (up to +$47 at sustained full CPU) or adding
+a NAT gateway or load balancer.
+
+Not baseline, billed per use (see above): Bedrock embeddings and extraction, and the paid plans
+of external tools.
+
+**Evidence.**
+- Every unit price is the AWS Pricing API list price for eu-west-1.
+- The bill (Cost Explorer) confirms the Elastic IP rate ($0.005/hour), gp3 ($0.088/GB-month)
+  and OpenSearch ($0.251/OCU-hour, previous default). It had not yet reported the t4g.small
+  hours of the 2026-11-04 test deployments when this was written.
+- Resource configuration comes from the deployed Terraform state; log volume from the deployed
+  server; SSM tiering from a 5 KB credential written to SSM (it moved to the advanced tier and
+  read back intact).
+
 ## Measured usage
 
 The small profile was deployed to eu-west-1 on 2026-11-04 (23 resources) and then destroyed.
@@ -177,6 +218,14 @@ per-GB charges with no hidden components:
 - 23/23 update and deletion checks with real GitHub commits
 - a full re-sync re-indexed 0 documents
 - the index survived an instance replacement and a reboot
+
+**Second validation deployment (2026-11-04, ~33 minutes, then destroyed):**
+- MCP Integrator end to end against GitHub's MCP server: 18/18.
+- Native end to end: 25/25.
+- Update and deletion propagation: 23/23.
+- Total AWS spend of both validation deployments: well under $1. That is ~1.3 instance-hours
+  at $0.027 plus a few dozen Claude Haiku 4.5 extraction calls; nothing else is billable at
+  idle.
 
 **Model cost evidence.** With `--bedrock`, the retrieval benchmark (20 documents, 11 LLM calls)
 used ~1,400 embedding tokens and ~660 tokens of document text per run. The fixed extraction

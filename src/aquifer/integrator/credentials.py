@@ -124,7 +124,17 @@ def build_oauth(server_url: str, storage: SecretTokenStorage, *, redirect_uri: s
     async def unattended(*_args) -> Any:  # noqa: ANN002
         raise NeedsAuthorization("authorization required")
 
-    metadata = OAuthClientMetadata(
+    class PinnedScopeMetadata(OAuthClientMetadata):
+        """The SDK replaces the scope with the server's challenge (e.g. Linear advertises
+        "read write"). A configured scope is a least-privilege choice: registration and
+        authorization both keep it."""
+
+        def __setattr__(self, name: str, value: Any) -> None:
+            if name == "scope" and scope:
+                value = scope
+            super().__setattr__(name, value)
+
+    metadata = PinnedScopeMetadata(
         client_name="Aquifer (self-hosted)",
         redirect_uris=[redirect_uri],
         grant_types=["authorization_code", "refresh_token"],

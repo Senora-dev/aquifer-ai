@@ -107,10 +107,10 @@ aquifer sources add slack --provider slack --client-id <your Slack app's client 
 
 | Provider | URL | Auth | Status |
 | --- | --- | --- | --- |
-| **GitHub** (remote MCP server) | `https://api.githubcopilot.com/mcp/` | Personal access token (read-only) | **Verified end to end (2026-11-04).** Token auth, server-side read-only mode (`X-MCP-Readonly`), 28 read-only tools, cursor and page pagination, not-found errors; discussions and release notes imported, edited and deleted (12/12 checks). Templates: `discussions`, `releases` |
+| **GitHub** (remote MCP server) | `https://api.githubcopilot.com/mcp/` | Personal access token (read-only) | **Verified end to end (2026-11-04)**, locally and on AWS (18/18). Token auth, server-side read-only mode (`X-MCP-Readonly`), 28 read-only tools, cursor and page pagination, not-found errors; discussions and release notes imported, re-run unchanged, edited, retried after a network fault, recovered after a crash, deleted. Templates: `discussions`, `releases` |
 | Atlassian Rovo (Jira, Confluence) | `https://mcp.atlassian.com/v1/mcp` | OAuth 2.1 (dynamic registration, PKCE, refresh) | Auth metadata verified; tools not verified (needs an Atlassian Cloud site). Your org admin may need to allow it |
-| Linear | `https://mcp.linear.app/mcp` | OAuth 2.1 (scope `read` requested) | Auth metadata verified; tools not verified |
-| Notion | `https://mcp.notion.com/mcp` | OAuth 2.1 | Auth metadata verified; tools not verified |
+| Linear | `https://mcp.linear.app/mcp` | OAuth 2.1 (scope `read` requested; Aquifer keeps it even though the server advertises `read write`) | Auth metadata and dynamic registration with a loopback redirect verified; login and tools pending |
+| Notion | `https://mcp.notion.com/mcp` | OAuth 2.1 (no read-only scope offered) | Auth metadata and dynamic registration with a loopback redirect verified; tools not verified |
 | Sentry | `https://mcp.sentry.dev/mcp` | OAuth 2.1 | Auth metadata verified; tools not verified |
 | Slack | `https://mcp.slack.com/mcp` | OAuth without dynamic registration: bring your own Slack app | Auth metadata verified; tools not verified. Check Slack's terms on storing message data |
 
@@ -173,6 +173,57 @@ Every page is a job on the server's durable queue:
 | `active` | Syncing on schedule | — |
 | `paused` | No syncs; documents hidden | `aquifer sources enable NAME` |
 
+## What has been verified, and how
+
+| Behavior | Real services (GitHub's MCP server, AWS) | Offline tests (local MCP + OAuth server) |
+| --- | --- | --- |
+| Initial import, paged (1 item per page) | ✅ AWS, 2026-11-04 | ✅ |
+| Retrieval through Aquifer's MCP tools, provenance, `list_sources` coverage | ✅ AWS | ✅ |
+| Unchanged content: a re-run indexes nothing and makes **no** detail calls | ✅ AWS | ✅ |
+| Update: only the changed item is fetched (1 detail call) and re-indexed | ✅ AWS | ✅ |
+| Retries: run during a network fault (all non-AWS HTTPS cut) fails as `source_unavailable`, is retried by the queue, and succeeds once the fault ends | ✅ AWS | ✅ (rate-limit postponement) |
+| Crash recovery: `kill -9` while a page job runs; on restart, 2 interrupted jobs were recovered; the run completed; 0 duplicate generations | ✅ AWS | ✅ |
+| Deletions: a discussion and a release deleted at the source, each confirmed by GitHub (`get_discussion`, `get_release_by_tag`) and removed; the others kept | ✅ AWS | ✅ (also: kept when only missing from the listing; never on partial or empty listings) |
+| Bearer token auth; rejected token → `needs_reauth` | ✅ GitHub PAT (accepted) | ✅ (rejection) |
+| Read-only gate, approved tools only, private-network guard | Classification checked on GitHub's 28 tools | ✅ |
+| OAuth 2.1: registration, PKCE, authorize, unattended refresh after restart, forced refresh, re-auth, least-privilege scope | Registration with Linear and Notion (loopback redirect accepted); full login pending a user click | ✅ |
+| Credentials > 4 KB in SSM (advanced tier) | ✅ AWS SSM | — |
+
+The AWS checks ran on an isolated deployment (`aquifer-val`, destroyed afterwards). Command:
+`./aquifer-aws test-integrator`. All source mutations went to a dedicated fixture repository
+(see [Test fixtures](#test-fixtures)).
+
+## Test fixtures
+
+`./aquifer-aws test-integrator` mutates only the fixture repository set by
+`AQUIFER_INTEGRATOR_FIXTURE`:
+- default: `<owner>/aquifer-test-integrator`, created by `./aquifer-aws seed`;
+- otherwise: `<owner>/aquifer-test-legacy-billing`, which no other test mutates.
+
+Each run creates discussions and a release named with a random marker (`E2E <marker> …`,
+`e2e-<marker>`) and deletes them at the end, even if a check fails. The fixture is left with
+Discussions enabled and no discussions or releases.
+
+## Scale profile
+
+The CDK scale profile (Lambda + SQS ingestion, OpenSearch Serverless, Fargate MCP) does **not**
+run the Integrator. This is a deliberate scope limit of this release, not an oversight. The
+Integrator needs:
+- durable local state between runs: the source registry, per-stream checkpoints, ids seen
+  during a run, and pending authorizations. The scale profile's compute is stateless (Lambda;
+  Fargate with a read-only root filesystem and no volume).
+- a long-running process to finish the interactive OAuth step and receive the browser
+  redirect. The scale profile's only HTTP entry point is an internal load balancer that a
+  user's browser normally cannot reach.
+- writable credential storage for rotating OAuth refresh tokens. The scale profile's tasks
+  only read Secrets Manager.
+
+Supporting it means moving that state to DynamoDB or S3, running the page jobs on SQS and
+Lambda, writing renewed tokens to Secrets Manager, and exposing an authenticated callback. That
+is a separate project. Until then, organizations that need the Integrator use the small profile
+or the container. Running a single Integrator node against the scale profile's OpenSearch index
+should work, because the pipeline is store-agnostic, but it is untested and not supported.
+
 ## Cost
 
 - **Infrastructure:** none beyond the server; the Integrator runs in the same process.
@@ -184,7 +235,7 @@ Every page is a job on the server's durable queue:
 ## Limitations
 
 - The Integrator runs in the single-server profile (`aquifer serve`, the AWS small profile and
-  Docker). The CDK scale profile does not run it.
+  Docker). The CDK scale profile does not run it (see [Scale profile](#scale-profile)).
 - Only GitHub has been verified end to end. Other providers use the generic path, and their
   stream mappings need checking at preview.
 - Changes are detected only as well as the source's tools allow. Each stream's coverage is
