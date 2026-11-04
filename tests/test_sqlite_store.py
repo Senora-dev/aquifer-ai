@@ -173,3 +173,12 @@ def test_fast_top_k_matches_the_reference_ranking(tmp_path):
             v = EMB.embed_query(query)
             assert ([(h.chunk_id, h.score) for h in fast.query(v, k)]
                     == [(h.chunk_id, h.score) for h in ref.query(v, k)]), (k, query)
+
+
+def test_a_stale_write_landing_after_a_newer_one_does_not_survive(store):
+    """Found as a rare flake under 4 concurrent writers: the newer writer finished (and cleaned
+    up) before the older writer's insert. Only the newest generation may remain."""
+    newer = T0 + timedelta(days=1)
+    store.replace_document("d1", [_chunk(gen="new", updated=newer, text="new")])
+    store.replace_document("d1", [_chunk(gen="old", updated=T0, text="old")])
+    assert {r["generation"] for r in store.get_by_document("d1")} == {"new"}

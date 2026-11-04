@@ -34,7 +34,6 @@ import numpy as np
 from aquifer.core.models import SearchResult
 from aquifer.vectorstore.memory import InMemoryVectorStore
 from aquifer.vectorstore.schema import (
-    chunk_rank,
     chunk_to_source,
     generation_rank,
     matches_filters,
@@ -198,16 +197,15 @@ class SqliteVectorStore(InMemoryVectorStore):
         if not chunks:
             self.delete_by_document(document_id)
             return
-        ours = chunk_rank(chunks[0])
-        generation = chunks[0].generation
-
         def work():  # noqa: ANN202
             # One transaction: the new generation and the removal of older ones commit together.
+            # Keep only the highest-ranked generation (possibly not ours: a newer write may have
+            # committed first), so concurrent writers converge in any order.
             self._apply_inserts(self._insert(chunks))
-            stale = [rid for rid, rec in self._records.items()
-                     if rec.get("document_id") == document_id
-                     and rec.get("generation") != generation
-                     and generation_rank(rec) < ours]
+            mine = [(rid, rec) for rid, rec in self._records.items()
+                    if rec.get("document_id") == document_id]
+            best = max(generation_rank(rec) for _, rec in mine)
+            stale = [rid for rid, rec in mine if generation_rank(rec) < best]
             self._delete_rids(stale)
             self._apply_deletes(stale)
 
