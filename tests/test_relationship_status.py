@@ -234,3 +234,19 @@ def test_removal_in_configuration_wins_over_old_merged_claim(tools):
     assert redis["status"] == "claimed"  # only the merged PR states it now
     assert redis.get("absent_from_current_config") is True
     assert not any(e.get("path") == "docker-compose.yml" for e in redis["evidence"])
+
+
+def test_extraction_changes_reindex_unchanged_documents():
+    """Bumping INDEX_FORMAT_VERSION must change every content hash, so documents indexed with
+    the previous extraction (no relationship status) are re-extracted on their next fetch."""
+    from aquifer.core import models
+
+    doc = _doc(DocumentKind.ISSUE, "1", "body")
+    before = doc.content_hash()
+    original = models.INDEX_FORMAT_VERSION
+    try:
+        models.INDEX_FORMAT_VERSION = "previous"
+        assert doc.content_hash() != before
+    finally:
+        models.INDEX_FORMAT_VERSION = original
+    assert models.INDEX_FORMAT_VERSION == "3"

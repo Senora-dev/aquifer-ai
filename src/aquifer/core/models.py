@@ -308,7 +308,7 @@ class Document(BaseModel):
 
 # Bump when chunking, extraction or the indexed schema change in a way that should cause every
 # document to be re-indexed on its next ingestion.
-INDEX_FORMAT_VERSION = "2"
+INDEX_FORMAT_VERSION = "3"  # 3: relationship assertion/status, quote verification
 
 
 def content_hash_for(basis: dict) -> str:
