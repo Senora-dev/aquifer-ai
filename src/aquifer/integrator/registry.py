@@ -207,7 +207,7 @@ class Registry:
         """A pending authorization requested by the CLI; the server fills in the URL."""
         request_id = uuid.uuid4().hex
         self._q("DELETE FROM oauth WHERE source = ? OR created_at < ?",
-                (source, time.time() - 3600))
+                (source, time.time() - 86400))
         self._q("INSERT INTO oauth (state, source, created_at, status) VALUES (?, ?, ?, ?)",
                 (request_id, source, time.time(), "starting"))
         return request_id
@@ -228,13 +228,14 @@ class Registry:
         return {"request_id": r[0], "source": r[1], "created_at": r[2], "auth_url": r[3],
                 "status": r[4], "code": r[5], "error": r[6], "oauth_state": r[7]}
 
-    def oauth_deliver(self, oauth_state: str, *, code: str | None, error: str | None) -> bool:
+    def oauth_deliver(self, oauth_state: str, *, code: str | None, error: str | None,
+                      max_age_s: float = 900) -> bool:
         """Called by the HTTP callback. Only a waiting request with this exact state matches
         (states are single-use: the row leaves 'waiting')."""
         with self._lock:
             row = self._conn.execute(
                 "SELECT state FROM oauth WHERE oauth_state = ? AND status = 'waiting' AND "
-                "created_at > ?", (oauth_state, time.time() - 900)).fetchone()
+                "created_at > ?", (oauth_state, time.time() - max_age_s)).fetchone()
             if row is None:
                 return False
             self._conn.execute(

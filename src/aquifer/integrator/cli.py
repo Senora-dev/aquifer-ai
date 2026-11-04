@@ -276,6 +276,8 @@ def cmd_template(args) -> int:  # noqa: ANN001
             stream = provider.templates[args.stream](target)
         except ValueError as exc:
             return _err(str(exc))
+        if args.page_size:
+            stream.pagination.size = max(1, min(100, args.page_size))
         problems = _add_stream(source, stream, live)
         if problems:
             return _err("; ".join(problems))
@@ -562,7 +564,7 @@ def add_commands(sub) -> None:  # noqa: ANN001
 
     au = ss.add_parser("authorize", help="OAuth in the browser, or check a token")
     au.add_argument("name")
-    au.add_argument("--timeout", type=int, default=660)
+    au.add_argument("--timeout", type=int, default=960)
     au.add_argument("--no-wait", action="store_true",
                     help="queue the authorization and print its id (remote operation)")
     au.set_defaults(fn=cmd_authorize)
@@ -581,6 +583,7 @@ def add_commands(sub) -> None:  # noqa: ANN001
     tp.add_argument("--stream", required=True)
     tp.add_argument("--target", action="append", required=True,
                     help="what to import, e.g. owner/repo (repeatable)")
+    tp.add_argument("--page-size", type=int, help="items per page (default from the template)")
     tp.set_defaults(fn=cmd_template)
 
     pr = ss.add_parser("propose", help="derive a stream from one sample call of a list tool")

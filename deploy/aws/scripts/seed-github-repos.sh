@@ -84,9 +84,15 @@ for name in payments platform legacy-billing; do
   seed_repo "$name"
 done
 
-# The MCP Integrator test (./aquifer-aws test-integrator) imports discussions and releases from
-# the payments repository through GitHub's MCP server; it needs discussions enabled.
-gh api -X PATCH "repos/$OWNER/$PREFIX-payments" -F has_discussions=true >/dev/null \
-  && log "discussions enabled on $OWNER/$PREFIX-payments"
+# Dedicated fixture for the MCP Integrator test (./aquifer-aws test-integrator): each run creates
+# uniquely named discussions and releases there and deletes them afterwards. Other tests never
+# mutate it. Override with AQUIFER_INTEGRATOR_FIXTURE=owner/repo.
+FIXTURE="${AQUIFER_INTEGRATOR_FIXTURE:-$OWNER/$PREFIX-integrator}"
+if ! gh repo view "$FIXTURE" >/dev/null 2>&1; then
+  log "creating private repo $FIXTURE (MCP Integrator fixture)"
+  gh repo create "$FIXTURE" --private --add-readme \
+    --description "Aquifer MCP Integrator test fixture (synthetic; safe to delete)" >/dev/null
+fi
+gh api -X PATCH "repos/$FIXTURE" -F has_discussions=true >/dev/null && log "discussions enabled on $FIXTURE"
 
 python3 -c "import json,sys; print(json.dumps([f'{sys.argv[1]}/{sys.argv[2]}-{n}' for n in ('payments','platform','legacy-billing')]))" "$OWNER" "$PREFIX"

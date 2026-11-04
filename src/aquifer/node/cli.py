@@ -100,7 +100,8 @@ def cmd_serve(args) -> int:  # noqa: ANN001
 
         integrator_jobs.register()
         tools.extra_sources = integrator_jobs.sources_provider(settings)
-        app = oauth_callback_app(app, lambda: integrator_jobs.registry_for(settings))
+        app = oauth_callback_app(app, lambda: integrator_jobs.registry_for(settings),
+                                 max_age_s=settings.integrator.authorize_timeout_s + 60)
     if not args.no_workers:
         service.start()
     import uvicorn

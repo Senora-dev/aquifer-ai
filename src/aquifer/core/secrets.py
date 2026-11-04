@@ -77,7 +77,10 @@ def store_secret(ref: str, value: str, *, client: Any | None = None) -> None:
         return
     if scheme == "ssm":
         ssm = client or _client("ssm")
-        ssm.put_parameter(Name=rest, Value=value, Type="SecureString", Overwrite=True)
+        # Intelligent-Tiering: standard (free) up to 4 KB, advanced ($0.05/month) above —
+        # OAuth credentials with server metadata can exceed 4 KB.
+        ssm.put_parameter(Name=rest, Value=value, Type="SecureString", Overwrite=True,
+                          Tier="Intelligent-Tiering")
         return
     raise ValueError(f"secret reference {ref.split(':', 1)[0]!r}: is not writable")
 

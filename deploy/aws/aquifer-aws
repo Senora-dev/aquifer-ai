@@ -463,26 +463,73 @@ cmd_test_updates() {
   return $rc
 }
 
+integrator_fixture() {
+  # The dedicated fixture repository for Integrator mutations (see scripts/seed-github-repos.sh).
+  if [[ -n "${AQUIFER_INTEGRATOR_FIXTURE:-}" ]]; then echo "$AQUIFER_INTEGRATOR_FIXTURE"; return; fi
+  local owner; owner="$(gh api user -q .login)"
+  if gh repo view "$owner/aquifer-test-integrator" >/dev/null 2>&1; then
+    echo "$owner/aquifer-test-integrator"
+  else
+    echo "$owner/aquifer-test-legacy-billing"  # fallback: no other test mutates this repo
+  fi
+}
+
+wait_healthy() {
+  remote 'for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1' >/dev/null
+}
+
+# Test helpers (used by test-integrator only; they affect only this deployment's server).
+cmd__fault() {
+  if [[ "${1:-}" == "on" ]]; then
+    # Outbound HTTPS to everything but AWS endpoints goes to a closed port.
+    remote 'mkdir -p /etc/systemd/system/aquifer.service.d && printf "[Service]\nEnvironment=HTTPS_PROXY=http://127.0.0.1:9\nEnvironment=NO_PROXY=.amazonaws.com,169.254.169.254,127.0.0.1,localhost\n" > /etc/systemd/system/aquifer.service.d/zz-test-fault.conf && systemctl daemon-reload && systemctl restart aquifer' >/dev/null
+  else
+    remote 'rm -f /etc/systemd/system/aquifer.service.d/zz-test-fault.conf && systemctl daemon-reload && systemctl restart aquifer' >/dev/null
+  fi
+  wait_healthy
+}
+
+cmd__crash_mid_sync() {
+  # Kill -9 the server while an mcp_page job is running, wait for systemd to restart it, and
+  # report how many interrupted jobs the new process recovered.
+  remote 'Q=/var/lib/aquifer/queue.db; L=/var/log/aquifer/aquifer.log; before=$(grep -c jobs_recovered_after_restart $L || true)
+for i in $(seq 1 600); do
+  n=$(/opt/aquifer/venv/bin/python -c "import sqlite3; print(sqlite3.connect(\"file:$Q?mode=ro\", uri=True).execute(\"select count(*) from jobs where status=\x27running\x27 and kind=\x27mcp_page\x27\").fetchone()[0])")
+  [ "$n" -gt 0 ] && break; sleep 0.1
+done
+systemctl kill -s KILL aquifer; sleep 8
+for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break; sleep 2; done
+after=$(grep -c jobs_recovered_after_restart $L || true)
+line=$(grep jobs_recovered_after_restart $L | tail -1)
+jobs=$(echo "$line" | sed -n "s/.*\"jobs\": \([0-9]*\).*/\1/p")
+[ "$after" -gt "$before" ] && echo "RECOVERED=${jobs:-0}" || echo "RECOVERED=0"'
+}
+
 cmd_test_integrator() {
-  # End-to-end MCP Integrator check against GitHub's real MCP server: connects a source (if
-  # missing) for the seeded payments repository, then runs tests/integrator_e2e.py.
+  # End-to-end MCP Integrator check against GitHub's real MCP server, with all mutations in a
+  # dedicated fixture repository: import, retrieval, unchanged runs, updates, retries during a
+  # network fault, crash recovery, deletions.
   local py; py="$(python_bin)"
-  local repo; repo="$("${TF[@]}" output -json repos | "$py" -c 'import json,sys; print(json.load(sys.stdin)[0])')"
+  local repo; repo="$(integrator_fixture)"
   local name="${1:-e2e-github}"
-  if ! aq sources status "$name" --json 2>/dev/null | grep -q "\"name\": \"$name\""; then
-    say "connecting GitHub's MCP server as source '$name' (token from gh, stored in SSM)"
+  gh api -X PATCH "repos/$repo" -F has_discussions=true >/dev/null
+  if ! aq sources status --json | grep -q "\"name\": \"$name\""; then
+    say "connecting GitHub's MCP server as source '$name' for $repo (token from gh, stored in SSM)"
     local ref; ref="$(cmd_source_token "$name" --from-gh 2>/dev/null | sed -n 's/^TOKEN_REF=//p')"
     aq sources add "$name" --provider github --token-ref "$ref" >&2
-    aq sources template "$name" --stream discussions --target "$repo" >&2
+    # Page size 1 so a run spans several pages (needed by the crash-recovery check).
+    aq sources template "$name" --stream discussions --target "$repo" --page-size 1 >&2
     aq sources template "$name" --stream releases --target "$repo" >&2
     aq sources preview "$name" --limit 1 >/dev/null
     aq sources enable "$name" >&2
   fi
   local url; url="$(mcp_base)"
   trap stop_forward EXIT
-  say "MCP Integrator end-to-end (GitHub remote MCP server → Aquifer → Aquifer MCP)"
+  say "MCP Integrator end-to-end (GitHub remote MCP server → Aquifer → Aquifer MCP), fixture $repo"
   "$py" "$HERE/tests/integrator_e2e.py" --url "$url" --token "$(mcp_token)" --repo "$repo" \
-    --source "$name" --aquifer "$HERE/aquifer-aws run"
+    --source "$name" --aquifer "$HERE/aquifer-aws run" \
+    --fault-on "$HERE/aquifer-aws _fault on" --fault-off "$HERE/aquifer-aws _fault off" \
+    --crash "$HERE/aquifer-aws _crash-mid-sync" --json-out "$BUILD/integrator-e2e.json"
 }
 
 # --- logs / maintenance / down -------------------------------------------------------------------
@@ -579,6 +626,8 @@ main() {
     test) cmd_test "$@" ;;
     test-updates) cmd_test_updates ;;
     test-integrator) cmd_test_integrator "$@" ;;
+    _fault) cmd__fault "$@" ;;
+    _crash-mid-sync) cmd__crash_mid_sync ;;
     metrics) cmd_metrics ;;
     logs) cmd_logs "$@" ;;
     run) cmd_run "$@" ;;

@@ -44,8 +44,6 @@ from aquifer.integrator.sync import reconcile_stream, run_page
 
 logger = logging.getLogger(__name__)
 
-AUTHORIZE_TIMEOUT_S = 600
-
 
 @lru_cache(maxsize=4)
 def _registry(path: str) -> Registry:
@@ -326,7 +324,7 @@ def handle_authorize(service, job) -> None:  # noqa: ANN001
         reg.oauth_update(request_id, auth_url=url, status="waiting", oauth_state=state)
 
     async def on_callback() -> tuple[str, str | None]:
-        deadline = time.monotonic() + AUTHORIZE_TIMEOUT_S
+        deadline = time.monotonic() + settings.integrator.authorize_timeout_s
         while time.monotonic() < deadline:
             row = reg.oauth_get(request_id) or {}
             if row.get("status") == "code_received":
@@ -334,7 +332,7 @@ def handle_authorize(service, job) -> None:  # noqa: ANN001
             if row.get("status") == "failed":
                 raise NeedsAuthorization(row.get("error") or "authorization was denied")
             await asyncio.sleep(1)
-        raise NeedsAuthorization("no browser callback within 10 minutes")
+        raise NeedsAuthorization("no browser callback in time; run authorize again")
 
     async def check() -> int:
         async with connect(source, redirect_uri=redirect_uri(settings),

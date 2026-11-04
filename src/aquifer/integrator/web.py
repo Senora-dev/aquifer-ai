@@ -2,8 +2,8 @@
 
 No bearer token is required (it is a browser redirect). The route only accepts an OAuth
 ``state`` that belongs to a pending authorization started by `aquifer sources authorize`,
-created less than 15 minutes ago, and still waiting; each state works once. The response is a
-static page: nothing from the request is echoed back.
+created within the authorization timeout, and still waiting; each state works once. The
+response is a static page: nothing from the request is echoed back.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ _PAGE = ("<!doctype html><meta charset=utf-8><title>Aquifer</title>"
          "<body style='font-family:system-ui;margin:3rem'><h1>{title}</h1><p>{text}</p></body>")
 
 
-def oauth_callback_app(app, registry_getter):  # noqa: ANN001, ANN201
+def oauth_callback_app(app, registry_getter, max_age_s: float = 900):  # noqa: ANN001, ANN201
     async def wrapped(scope, receive, send) -> None:  # noqa: ANN001
         if scope["type"] != "http" or scope.get("path") != "/oauth/callback":
             await app(scope, receive, send)
@@ -25,7 +25,8 @@ def oauth_callback_app(app, registry_getter):  # noqa: ANN001, ANN201
         error = (query.get("error") or [None])[0]
         delivered = bool(state) and registry_getter().oauth_deliver(
             state, code=code[:4000] if code else None,
-            error=f"provider returned error: {error[:100]}" if error else None)
+            error=f"provider returned error: {error[:100]}" if error else None,
+            max_age_s=max_age_s)
         if delivered and code:
             status, title, text = 200, "Authorized", "Aquifer received the authorization. " \
                 "You can close this tab; the terminal shows the result."

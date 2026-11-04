@@ -242,6 +242,8 @@ class IntegratorSettings(_Base):
     # node.data_dir/credentials. The AWS profile uses "ssm:/aquifer/<name>/sources".
     credentials_prefix: str = ""
     default_schedule_hours: int = 24
+    # How long an OAuth authorization waits for the browser redirect.
+    authorize_timeout_s: int = 900
     # Incremental streams (ordered by update time) re-list everything every Nth run so items
     # deleted at the source can still be detected.
     full_listing_every_runs: int = 7
