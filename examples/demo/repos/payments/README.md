@@ -8,4 +8,6 @@ The payments platform hosts two services:
 Both services are owned by team-payments. Local development uses docker-compose
 (see `docker-compose.yml`); production infrastructure lives in `infra/`.
 
+billing-api caches user sessions in memcached.
+
 Runbook: page the payments on-call for incidents affecting invoice creation.

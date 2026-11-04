@@ -89,7 +89,7 @@ class _Collector:
             return
         self.relationships[key] = Relationship(
             type=rel_type, source=source[1], source_type=source[0], target=target[1],
-            target_type=target[0], description=description, origin=_EXPLICIT, grounded=True,
+            target_type=target[0], description=description, origin=_EXPLICIT,
             evidence=[self.node_evidence(node)],
         )
 

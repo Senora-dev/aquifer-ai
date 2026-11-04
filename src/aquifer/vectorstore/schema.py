@@ -34,12 +34,14 @@ AGENT_FILTERABLE_FIELDS = frozenset(
         "relationship_target_keys",
         "relationship_source_keys",
         "relationship_origins",
+        "relationship_statuses",
+        "relationship_assertions",
     }
 )
 
 # Additional fields used internally by the pipeline (generation cleanup, freshness).
 INTERNAL_FILTERABLE_FIELDS = frozenset(
-    {"content_hash", "extraction_status", "chunk_id", "generation"}
+    {"content_hash", "extraction_status", "extraction_error", "chunk_id", "generation"}
 )
 
 FILTERABLE_FIELDS = AGENT_FILTERABLE_FIELDS | INTERNAL_FILTERABLE_FIELDS
@@ -71,10 +73,14 @@ KEYWORD_FIELDS = (
     "relationship_target_keys",
     "relationship_source_keys",
     "relationship_origins",
+    "relationship_statuses",
+    "relationship_assertions",
+    "extraction_error",
 )
-DATE_FIELDS = ("created_at", "updated_at", "revision_committed_at", "fetched_at", "indexed_at")
+DATE_FIELDS = ("created_at", "updated_at", "revision_committed_at", "fetched_at", "indexed_at",
+               "next_retry_at")
 INTEGER_FIELDS = ("chunk_index", "overlap_words", "char_start", "char_end", "line_start",
-                  "line_end")
+                  "line_end", "extraction_attempts")
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -113,6 +119,10 @@ def chunk_to_source(chunk: Chunk) -> dict:
         "indexed_at": _iso(chunk.indexed_at),
         "state": chunk.state,
         "extraction_status": chunk.extraction_status,
+        "extraction_attempts": chunk.extraction_attempts,
+        "extraction_error": chunk.extraction_error,
+        "next_retry_at": _iso(chunk.next_retry_at),
+        "source_metadata": chunk.source_metadata,
         "content_hash": chunk.content_hash,
         "generation": chunk.generation,
         "char_start": chunk.char_start,
@@ -127,7 +137,7 @@ def chunk_to_source(chunk: Chunk) -> dict:
         "entity_keys": _uniq(namespaced_key(e.type, e.name, e.namespace) for e in entities),
         "entity_name_keys": _uniq(normalize_name(e.name) for e in entities),
         "topics": chunk.topics,
-        "relationships": [r.model_dump(exclude_none=True) for r in relationships],
+        "relationships": [r.model_dump(mode="json", exclude_none=True) for r in relationships],
         "relationship_targets": [r.target for r in relationships],
         "relationship_types": [r.type for r in relationships],
         "relationship_target_keys": _uniq(normalize_name(r.target) for r in relationships),
@@ -135,6 +145,8 @@ def chunk_to_source(chunk: Chunk) -> dict:
             normalize_name(r.source) for r in relationships if r.source
         ),
         "relationship_origins": _uniq(r.origin for r in relationships),
+        "relationship_statuses": _uniq(r.status for r in relationships),
+        "relationship_assertions": _uniq(r.assertion for r in relationships),
     }
 
 
@@ -199,3 +211,36 @@ def matches_filters(source: dict, filters: dict | None) -> bool:
         if not (wanted_values & actual_values):
             return False
     return True
+
+
+RETRYABLE_STATUSES = ("retry_pending", "partial")
+
+
+def retry_due_record(record: dict, now_iso: str) -> bool:
+    """In-memory equivalent of the retry-sweep query (see ``AossVectorStore``)."""
+    status = record.get("extraction_status")
+    if status == "failed":
+        return record.get("extraction_error") is None  # predates retry tracking
+    if status not in RETRYABLE_STATUSES:
+        return False
+    due = record.get("next_retry_at")
+    return due is None or due <= now_iso
+
+
+def generation_rank(record: dict) -> tuple[str, str, str]:
+    """Total order of a document's generations: source version, then write time, then id.
+
+    Replacement deletes only generations ranked below its own, so concurrent writers of the
+    same document always converge on exactly one surviving generation, and a late retry of
+    older content never deletes newer content.
+    """
+    version = str(record.get("updated_at") or record.get("revision_committed_at") or "")
+    return (version, str(record.get("indexed_at") or ""), str(record.get("generation") or ""))
+
+
+def chunk_rank(chunk) -> tuple[str, str, str]:  # noqa: ANN001 - Chunk
+    def iso(dt):  # noqa: ANN001, ANN202
+        return dt.isoformat() if dt is not None else ""
+
+    return (iso(chunk.updated_at or chunk.revision_committed_at), iso(chunk.indexed_at),
+            chunk.generation or "")

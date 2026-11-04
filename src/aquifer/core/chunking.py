@@ -161,6 +161,13 @@ def chunk_document(doc: Document, chunk_size: int, overlap: int) -> list[Chunk]:
     }
     content_hash = doc.content_hash()
     indexed_at = datetime.now(UTC)
+    # Enough to rebuild the exact document from the index for re-processing: the source's own
+    # metadata plus the body's leading whitespace (chunks start at the first word).
+    source_metadata = {
+        **{k: v for k, v in doc.metadata.items() if isinstance(v, (str, int, float, bool))},
+        "_external_id": doc.external_id,
+        "_body_leading_ws": body[: len(body) - len(body.lstrip())],
+    }
 
     chunks: list[Chunk] = []
     for index, span in enumerate(spans):
@@ -195,6 +202,10 @@ def chunk_document(doc: Document, chunk_size: int, overlap: int) -> list[Chunk]:
                 indexed_at=indexed_at,
                 state=doc.state,
                 extraction_status=doc.extraction_status,
+                extraction_attempts=doc.extraction_attempts,
+                extraction_error=doc.extraction_error,
+                next_retry_at=doc.next_retry_at,
+                source_metadata=source_metadata,
                 content_hash=content_hash,
                 char_start=span.start,
                 char_end=span.end,
@@ -233,3 +244,24 @@ def reassemble(chunks: list[dict]) -> str:
             text = " ".join(text.split()[overlap:])
         parts.append(text)
     return "\n".join(parts)
+
+
+def newest_generation(sources: list[dict]) -> list[dict]:
+    """If two generations of a document are briefly visible, keep only the newest one.
+
+    "Newest" is the most recent source version (``updated_at``, else the revision commit time),
+    then the most recent write — so a late retry of old content never shadows newer content.
+    """
+    generations = {s.get("generation") for s in sources}
+    if len(generations) <= 1:
+        return sources
+
+    def key(gen):  # noqa: ANN001, ANN202
+        rows = [s for s in sources if s.get("generation") == gen]
+        version = max(str(s.get("updated_at") or s.get("revision_committed_at") or "")
+                      for s in rows)
+        written = max(str(s.get("indexed_at") or "") for s in rows)
+        return (version, written, gen or "")
+
+    keep = max(generations, key=key)
+    return [s for s in sources if s.get("generation") == keep]

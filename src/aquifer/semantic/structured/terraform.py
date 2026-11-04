@@ -189,7 +189,7 @@ def extract_terraform(text: str, ev: EvidenceFactory) -> SemanticMetadata | None
                 relationships.setdefault(key, Relationship(
                     type="references", source=src, source_type=src_type, target=target,
                     target_type="terraform_module_source", description="module source",
-                    origin=_EXPLICIT, grounded=True, evidence=[ev.span(sm.start(), sm.end())],
+                    origin=_EXPLICIT, evidence=[ev.span(sm.start(), sm.end())],
                 ))
 
         depends_spans = _bracket_spans(masked, open_brace, end)
@@ -206,7 +206,7 @@ def extract_terraform(text: str, ev: EvidenceFactory) -> SemanticMetadata | None
                 continue
             relationships[key] = Relationship(
                 type=rel_type, source=src, source_type=src_type, target=ref,
-                target_type=_ref_type(ref), origin=_EXPLICIT, grounded=True,
+                target_type=_ref_type(ref), origin=_EXPLICIT,
                 evidence=[ev.span(pos, pos + len(ref))],
             )
 

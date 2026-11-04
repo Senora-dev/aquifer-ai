@@ -54,6 +54,26 @@ regions in the profile's geography. To run without an LLM at all, pass
 Changing the embedding model or dimensions after data is indexed requires a new index
 (`-c index=<new-name>`).
 
+### Bedrock model access
+
+New AWS accounts need up to three one-time steps before Claude models can be invoked. The
+symptoms below appear as `extraction_error` codes in the worker logs and as
+`extraction: {"retry_pending": …}` in `list_sources`; documents retry automatically once fixed.
+
+1. **Model availability** — the model or inference profile must exist in the region and be
+   offered to your account (`bedrock_model_not_found` / `bedrock_model_not_available`). The newest
+   models may require contacting AWS.
+2. **Anthropic use case form** — Bedrock console → Model catalog → an Anthropic model → *Submit
+   use case details* (`bedrock_use_case_form_required`). Takes effect within ~15 minutes.
+3. **AWS Marketplace subscription** — the first invocation in the account must come from a
+   principal allowed `aws-marketplace:Subscribe` / `ViewSubscriptions`, e.g. an administrator
+   sending one message in the Bedrock console Playground
+   (`bedrock_marketplace_subscription_required`). Aquifer's roles intentionally do not get
+   Marketplace permissions.
+
+`scripts/preflight.py --invoke-test` and `deploy/terraform/aquifer-test check` make one tiny call
+and print which step is missing.
+
 ## 3. GitHub token permissions
 
 Create a **fine-grained personal access token** (or GitHub App installation token) limited to

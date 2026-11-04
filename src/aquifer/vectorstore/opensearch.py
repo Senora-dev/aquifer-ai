@@ -20,7 +20,8 @@ The boto3/opensearch-py clients are created lazily and can be injected for testi
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from aquifer.core.config import VectorStoreSettings, get_settings
@@ -32,7 +33,10 @@ from aquifer.vectorstore.schema import (
     FILTERABLE_FIELDS,
     INTEGER_FIELDS,
     KEYWORD_FIELDS,
+    RETRYABLE_STATUSES,
+    chunk_rank,
     chunk_to_source,
+    generation_rank,
     source_to_result,
     validate_filters,
 )
@@ -47,14 +51,22 @@ _MAX_SCAN = 10_000  # from+size ceiling for a plain search
 _SOURCE_EXCLUDES = {"excludes": ["vector"]}
 
 
+def _is_index_not_found(exc: BaseException) -> bool:
+    return getattr(exc, "status_code", None) == 404 and "index_not_found" in str(
+        getattr(exc, "error", "") or exc
+    )
+
+
 class AossVectorStore(VectorStore):
     def __init__(
         self,
         settings: VectorStoreSettings | None = None,
         dimensions: int | None = None,
         client: Any | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._settings = settings or get_settings().vector_store
+        self._sleep = sleep
         if dimensions is None:
             dimensions = get_settings().embedding.dimensions
         self._dimensions = dimensions
@@ -112,6 +124,7 @@ class AossVectorStore(VectorStore):
             "summary": {"type": "text"},
             "entities": {"type": "object", "enabled": False},
             "relationships": {"type": "object", "enabled": False},
+            "source_metadata": {"type": "object", "enabled": False},
         }
         props.update({f: {"type": "keyword"} for f in KEYWORD_FIELDS})
         props.update({f: {"type": "date"} for f in DATE_FIELDS})
@@ -127,7 +140,14 @@ class AossVectorStore(VectorStore):
     def ensure_index(self) -> None:
         """Create the index, or add any fields introduced since it was created (idempotent)."""
         if not self.client.indices.exists(index=self._index):
-            self.client.indices.create(index=self._index, body=self._index_body())
+            try:
+                self.client.indices.create(index=self._index, body=self._index_body())
+                log_event(logger, "index_created", index=self._index)
+            except Exception as exc:
+                # Concurrent cold starts race to create it; losing that race is fine.
+                if "resource_already_exists" not in str(getattr(exc, "error", "") or exc):
+                    raise
+            self._wait_until_visible()
             return
         # Adding new fields to an existing mapping is allowed; changing existing ones is not, so
         # only the non-vector fields are sent and a conflict is logged rather than fatal.
@@ -148,6 +168,18 @@ class AossVectorStore(VectorStore):
                 index=self._index,
                 error=type(exc).__name__,
             )
+
+    def _wait_until_visible(self, timeout_s: float = 90.0) -> None:
+        """A new AOSS index can answer ``index_not_found`` for a short while after creation.
+
+        Writing during that window could auto-create an index with a dynamic mapping (no vector
+        field), so wait until it is visible before returning.
+        """
+        deadline = time.monotonic() + timeout_s
+        while not self.client.indices.exists(index=self._index):
+            if time.monotonic() > deadline:
+                raise TransientError(f"index {self._index} not visible after {timeout_s}s")
+            self._sleep(2.0)
 
     # --- writes ----------------------------------------------------------
 
@@ -186,7 +218,14 @@ class AossVectorStore(VectorStore):
         self._bulk(actions, "index")
 
     def _search(self, body: dict) -> dict:
-        return self.client.search(index=self._index, body=body)
+        try:
+            return self.client.search(index=self._index, body=body)
+        except Exception as exc:
+            # Before the first worker run the index does not exist yet; for every reader
+            # (discovery's purge, the MCP tools) that simply means "nothing indexed".
+            if _is_index_not_found(exc):
+                return {"hits": {"hits": []}, "aggregations": {}}
+            raise
 
     def _scan(self, query: dict, fields: list[str]) -> list[dict]:
         """Return ``{"_id", **fields}`` for every hit of ``query`` (up to 10k)."""
@@ -219,21 +258,16 @@ class AossVectorStore(VectorStore):
             self.delete_by_document(document_id)
             return
         self.upsert(chunks)
-        generation = chunks[0].generation
-        updated_at = chunks[0].updated_at
+        ours = chunk_rank(chunks[0])
         existing = self._scan(
-            {"term": {"document_id": document_id}}, ["generation", "updated_at"]
+            {"term": {"document_id": document_id}},
+            ["generation", "updated_at", "revision_committed_at", "indexed_at"],
         )
-        stale = []
-        for hit in existing:
-            if generation is not None and hit.get("generation") == generation:
-                continue
-            # Never delete a generation of a *newer* upstream version written concurrently.
-            their = hit.get("updated_at")
-            if updated_at is not None and their and their > updated_at.isoformat():
-                continue
-            stale.append(hit["_id"])
-        self._delete_ids(stale)
+        # Only lower-ranked generations: never a newer version written concurrently, and two
+        # writers of the same version converge on one survivor.
+        own = chunks[0].generation
+        self._delete_ids([h["_id"] for h in existing
+                          if h.get("generation") != own and generation_rank(h) < ours])
 
     def delete_by_document(self, document_id: str) -> None:
         self.delete_by_filter({"document_id": document_id})
@@ -305,7 +339,8 @@ class AossVectorStore(VectorStore):
             return {}
         hits = self._scan(
             {"terms": {"document_id": list(document_ids)}},
-            ["document_id", "content_hash", "updated_at", "extraction_status", "indexed_at"],
+            ["document_id", "content_hash", "updated_at", "extraction_status", "indexed_at",
+             "extraction_attempts", "extraction_error", "next_retry_at"],
         )
         newest: dict[str, dict] = {}
         for hit in hits:
@@ -321,9 +356,44 @@ class AossVectorStore(VectorStore):
                 content_hash=h.get("content_hash"),
                 updated_at=h.get("updated_at"),
                 extraction_status=h.get("extraction_status"),
+                extraction_attempts=h.get("extraction_attempts") or 0,
+                extraction_error=h.get("extraction_error"),
+                next_retry_at=h.get("next_retry_at"),
             )
             for doc_id, h in newest.items()
         }
+
+    def get_document_vectors(self, document_id: str) -> dict[str, list[float]]:
+        body = {
+            "size": 1000,
+            "query": {"term": {"document_id": document_id}},
+            "_source": {"includes": ["text", "vector"]},
+        }
+        hits = self._search(body).get("hits", {}).get("hits", [])
+        return {h["_source"]["text"]: h["_source"]["vector"] for h in hits
+                if (h.get("_source") or {}).get("vector")}
+
+    def documents_due_for_retry(self, now, limit: int = 200) -> list[str] | None:  # noqa: ANN001
+        """Documents in retry_pending (or legacy partial) whose next_retry_at has passed, plus
+        legacy "failed" documents without an error code (indexed before retry tracking)."""
+        now_iso = now.isoformat()
+        query = {"bool": {"should": [
+            {"bool": {"filter": [
+                {"terms": {"extraction_status": list(RETRYABLE_STATUSES)}},
+                {"bool": {"should": [
+                    {"range": {"next_retry_at": {"lte": now_iso}}},
+                    {"bool": {"must_not": [{"exists": {"field": "next_retry_at"}}]}},
+                ], "minimum_should_match": 1}},
+            ]}},
+            {"bool": {
+                "filter": [{"term": {"extraction_status": "failed"}}],
+                "must_not": [{"exists": {"field": "extraction_error"}}],
+            }},
+        ], "minimum_should_match": 1}}
+        body = {"size": 0, "query": query,
+                "aggs": {"ids": {"terms": {"field": "document_id", "size": limit}}}}
+        aggs = self._search(body).get("aggregations", {})
+        return [b["key"] for b in aggs.get("ids", {}).get("buckets", [])]
 
     def _aggregate(self, filters: dict | None, aggs: dict) -> dict:
         query = self._build_filter(filters) or {"match_all": {}}

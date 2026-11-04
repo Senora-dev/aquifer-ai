@@ -72,3 +72,19 @@ jobs:
           if docker run --rm --read-only aquifer-mcp:ci; then
             echo "server started without tokens" && exit 1
           fi
+
+  terraform:
+    name: Terraform evaluation environment validates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: fmt + validate (no AWS access)
+        working-directory: deploy/terraform
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          mkdir -p .build && touch .build/lambda.zip
+          terraform validate
+      - name: Shell scripts parse
+        run: bash -n deploy/terraform/aquifer-test deploy/terraform/scripts/seed-github-repos.sh

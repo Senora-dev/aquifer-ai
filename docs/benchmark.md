@@ -56,7 +56,7 @@ reported as **skipped** offline — never counted as passed.
 | edge_precision (exhaustive cases) | For cases that list *all* true edges: returned edges that are true |
 | provenance_coverage | Results/edges with repository + path/URL; file-backed ones also need line range and revision |
 | freshness_metadata_coverage | Search results carrying `indexed_at` |
-| unsupported_relationship_rate | Returned edges with no explicit reference and no grounded LLM support |
+| unsupported_relationship_rate | Returned edges with no explicit reference and no verified quote |
 | extraction P/R | Deterministic extraction vs the golden file (entities and relationships) |
 | latency p50/p95 | In-process tool latency (in-memory store — **not** representative of OpenSearch/Bedrock) |
 | estimated tokens | characters / 4 for embeddings and LLM input; dollars only if you pass prices |

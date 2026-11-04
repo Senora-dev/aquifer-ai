@@ -204,20 +204,15 @@ class _FlakyIndexer(SemanticIndexer):
         return SemanticMetadata(summary="ok")
 
 
-def test_failed_extraction_is_recorded_and_retried_on_next_run():
+def test_failed_extraction_is_recorded_without_failing_ingestion():
     store = InMemoryVectorStore()
-    indexer = _FlakyIndexer()
-    seam = InterceptorPipeline([SemanticIndexInterceptor(indexer=indexer)])
-    pipe = _pipeline(ListConnector([_doc()]), store, interceptors=seam)
-
-    pipe.run_job(JOB)
-    assert store.get_by_document(_doc().id)[0]["extraction_status"] == "failed"
-
-    indexer.fail = False
-    result = pipe.run_job(JOB)  # same content, but extraction failed last time
-    assert result.indexed == 1
-    assert store.get_by_document(_doc().id)[0]["extraction_status"] == "ok"
-    assert pipe.run_job(JOB).skipped == 1  # now stable
+    seam = InterceptorPipeline([SemanticIndexInterceptor(indexer=_FlakyIndexer())])
+    result = _pipeline(ListConnector([_doc()]), store, interceptors=seam).run_job(JOB)
+    assert result.indexed == 1  # still searchable
+    rec = store.get_by_document(_doc().id)[0]
+    assert rec["extraction_status"] == "retry_pending"
+    assert rec["extraction_error"] == "unparseable_model_output"
+    assert rec["extraction_attempts"] == 1 and rec["next_retry_at"]
 
 
 def test_chunks_carry_provenance_and_freshness():
@@ -232,13 +227,16 @@ def test_chunks_carry_provenance_and_freshness():
     assert rec["indexed_at"] and rec["fetched_at"] and rec["content_hash"] and rec["generation"]
 
 
-def test_transient_extraction_error_fails_the_page_for_retry():
+def test_transient_extraction_error_does_not_fail_the_page():
     class Throttled(SemanticIndexer):
         def extract(self, document):
             raise TransientError("ThrottlingException")
 
     seam = InterceptorPipeline([SemanticIndexInterceptor(indexer=Throttled())])
     store = InMemoryVectorStore()
-    with pytest.raises(TransientError):
-        _pipeline(ListConnector([_doc()]), store, interceptors=seam).run_job(JOB)
-    assert len(store) == 0
+    result = _pipeline(ListConnector([_doc(1), _doc(2)]), store, interceptors=seam).run_job(JOB)
+    # Neither the page nor the other documents are re-fetched or re-embedded for a retry.
+    assert (result.indexed, result.failed) == (2, 0)
+    assert {r["extraction_error"] for r in (store.get_by_document(_doc(1).id)
+                                            + store.get_by_document(_doc(2).id))} == {
+        "transient_error"}

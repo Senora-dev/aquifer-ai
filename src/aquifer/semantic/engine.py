@@ -50,7 +50,9 @@ class LlmSemanticIndexer(SemanticIndexer):
             topics=out.topics,
             relationships=[
                 Relationship(type=r.type, target=r.target, source=r.source or None,
-                             description=r.description, origin=_LLM)
+                             description=r.description, origin=_LLM,
+                             assertion=(r.assertion or "present").strip().lower(),
+                             quote=r.quote or None)
                 for r in out.relationships
             ],
         )

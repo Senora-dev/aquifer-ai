@@ -15,7 +15,7 @@ import json
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SourceType(StrEnum):
@@ -52,14 +52,50 @@ class RelationshipOrigin(StrEnum):
     LLM_EXTRACTED = "llm_extracted"
 
 
+class Assertion(StrEnum):
+    """What the source text *does* with a relationship (set by the extractor).
+
+    The distinction matters: "moved the cache from memcached to redis" *removes* memcached and
+    *adds* redis; "would call fraud-check" *proposes*; "we could consider kafka" *discusses*;
+    "billing-api does not use kafka" *negates*. Only ``present`` and ``added`` claim that the
+    relationship holds.
+    """
+
+    PRESENT = "present"  # states the relationship holds
+    ADDED = "added"  # states a change introduced it
+    REMOVED = "removed"  # states a change removed it / it no longer holds
+    PROPOSED = "proposed"  # suggests or plans it; not in effect
+    DISCUSSED = "discussed"  # mentions it as an option, question or hypothetical
+    NEGATED = "negated"  # states it does not hold
+
+
+class RelationshipStatus(StrEnum):
+    """What Aquifer can say about a relationship, from the assertion and the document context.
+
+    Aquifer distinguishes what a source *mentions*, what it *claims*, what is *proposed*, and what
+    is *observed in current configuration*. Only ``current`` describes the present state of the
+    system as read from structured configuration at a known revision.
+    """
+
+    CURRENT = "current"  # parsed from structured configuration at the indexed revision
+    CLAIMED = "claimed"  # a source states it holds (or was added), as of ``as_of``
+    REMOVED = "removed"  # a source states it was removed, as of ``as_of``
+    ABSENT = "absent"  # a source states it does not hold
+    PROPOSED = "proposed"  # proposed / planned, or stated by an open (unmerged) pull request
+    NOT_MERGED = "not_merged"  # stated by a pull request that was closed without merging
+    DISCUSSED = "discussed"  # mentioned as an option or hypothetical; not a claim
+
+
 class ExtractionStatus(StrEnum):
-    """Outcome of semantic extraction for a document (recorded so failures can be retried)."""
+    """Processing state of a document's semantic extraction, tracked separately from its
+    content version so incomplete processing can be retried without a content change."""
 
     OK = "ok"
-    PARTIAL = "partial"  # structured extraction succeeded, LLM extraction failed
-    FAILED = "failed"
+    RETRY_PENDING = "retry_pending"  # LLM extraction failed; scheduled for an automatic retry
+    FAILED = "failed"  # gave up after the retry budget, or a permanent content error
     DISABLED = "disabled"
     NOT_RUN = "not_run"
+    PARTIAL = "partial"  # legacy value (pre-retry tracking); treated like retry_pending
 
 
 class Source(BaseModel):
@@ -91,6 +127,11 @@ class FetchJob(BaseModel):
     # How many times this job has been re-enqueued because the source was rate limited.
     # Bounded by the worker so a permanently throttled job eventually reaches the DLQ.
     attempt: int = 0
+    # "fetch" (default): fetch one page from the source. "reprocess": re-run extraction for
+    # ``document_ids`` from the content already in the index (retries of failed extraction;
+    # no source access needed).
+    job_type: str = "fetch"
+    document_ids: list[str] = Field(default_factory=list)
 
 
 class Evidence(BaseModel):
@@ -150,10 +191,31 @@ class Relationship(BaseModel):
     # Relationships indexed before provenance existed were all produced by the LLM extractor,
     # so that is the accurate default.
     origin: str = RelationshipOrigin.LLM_EXTRACTED.value
-    # For LLM relationships: whether the target name was found in the source text. ``None`` =
-    # not checked. Explicit references are grounded by construction.
-    grounded: bool | None = None
+    # What the source does with the relationship (see ``Assertion``). ``None`` on data indexed
+    # before assertions existed.
+    assertion: str | None = None
+    # What Aquifer can say about it given the document context (see ``RelationshipStatus``).
+    status: str | None = None
+    # When the source made the statement: merge time of a PR, update time of an issue,
+    # commit time of a file's revision. ``None`` if unknown.
+    as_of: datetime | None = None
+    # LLM relationships only. ``mention_found``: the target name occurs in the source text —
+    # this says nothing about whether the relationship is true. ``quote_verified``: the
+    # sentence the model cited as support occurs verbatim in the text.
+    mention_found: bool | None = None
+    quote_verified: bool | None = None
+    # Deprecated alias of ``mention_found`` (read from older data, never written).
+    grounded: bool | None = Field(default=None, exclude=True)
+    # Transient: the model's cited sentence, checked by grounding and then dropped.
+    quote: str | None = Field(default=None, exclude=True)
     evidence: list[Evidence] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _legacy_grounded(self) -> Relationship:
+        if self.grounded is not None and self.mention_found is None:
+            self.mention_found = self.grounded
+        self.grounded = None
+        return self
 
 
 class SemanticMetadata(BaseModel):
@@ -206,8 +268,13 @@ class Document(BaseModel):
     fetched_at: datetime | None = None
     # Source-side state where meaningful (issue/PR: "open" | "closed" | "merged").
     state: str | None = None
-    # Outcome of semantic extraction (see ``ExtractionStatus``).
+    # Processing state of semantic extraction (see ``ExtractionStatus``), tracked separately
+    # from the content version (``content_hash``).
     extraction_status: str | None = None
+    extraction_attempts: int = 0
+    # Stable error code of the last failed extraction (e.g. "bedrock_access_denied").
+    extraction_error: str | None = None
+    next_retry_at: datetime | None = None
 
     def content_hash(self) -> str:
         """A stable fingerprint of everything that affects what gets indexed.
@@ -241,7 +308,7 @@ class Document(BaseModel):
 
 # Bump when chunking, extraction or the indexed schema change in a way that should cause every
 # document to be re-indexed on its next ingestion.
-INDEX_FORMAT_VERSION = "2"
+INDEX_FORMAT_VERSION = "3"  # 3: relationship assertion/status, quote verification
 
 
 def content_hash_for(basis: dict) -> str:
@@ -296,6 +363,12 @@ class Chunk(BaseModel):
     indexed_at: datetime | None = None
     state: str | None = None
     extraction_status: str | None = None
+    extraction_attempts: int = 0
+    extraction_error: str | None = None
+    next_retry_at: datetime | None = None
+    # Source-specific document metadata (e.g. merged_at, blob_sha), kept so a document can be
+    # re-processed from the index without fetching it again.
+    source_metadata: dict = Field(default_factory=dict)
     # Fingerprint of the parent document's content at ingestion time (skip-unchanged).
     content_hash: str | None = None
     # Unique id of the ingestion that wrote this chunk. Replacing a document writes a new
@@ -385,3 +458,6 @@ class IndexedState(BaseModel):
     content_hash: str | None = None
     updated_at: datetime | None = None
     extraction_status: str | None = None
+    extraction_attempts: int = 0
+    extraction_error: str | None = None
+    next_retry_at: datetime | None = None

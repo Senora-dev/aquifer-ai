@@ -118,3 +118,36 @@ def test_enqueue_delay_is_capped_at_sqs_maximum():
                    kind=DocumentKind.ISSUE)
     aws.enqueue_job("q", job, delay_seconds=5000, client=Sqs())
     assert sent["DelaySeconds"] == 900
+
+
+def test_get_secret_strips_trailing_newline():
+    class Sm:
+        def get_secret_value(self, SecretId):
+            return {"SecretString": "token-value\n"}
+
+    assert aws.get_secret("arn", client=Sm()) == "token-value"
+
+
+def test_watermark_from_an_older_index_format_forces_one_full_sync():
+    import io
+    import json as _json
+
+    from aquifer.core.models import INDEX_FORMAT_VERSION
+
+    class S3:
+        def __init__(self):
+            self.body = None
+
+        def put_object(self, **kw):
+            self.body = kw["Body"]
+
+        def get_object(self, **kw):
+            return {"Body": io.BytesIO(self.body)}
+
+    s3 = S3()
+    since = datetime(2024, 1, 1, tzinfo=UTC)
+    aws.write_watermark("b", "k", since, client=s3)
+    assert _json.loads(s3.body)["index_format"] == INDEX_FORMAT_VERSION
+    assert aws.read_watermark("b", "k", client=s3) == since
+    s3.body = _json.dumps({"since": since.isoformat()}).encode()  # written by an older version
+    assert aws.read_watermark("b", "k", client=s3) is None

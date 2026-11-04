@@ -3,6 +3,43 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — Context correctness and extraction reliability
+
+Found by deploying Engineering Context v1 to AWS and ingesting real GitHub repositories.
+
+### Fixed
+- **Removed dependencies were reported as dependencies.** The PR extraction prompt asked for
+  "depends_on (dependencies added or removed)", so "moved the cache from memcached to redis"
+  produced `billing-api depends_on memcached`. Relationships now carry an `assertion` and a
+  derived `status`; a removal is `removed`, never a dependency.
+- Failed LLM extraction of issues/PRs was only retried when the item changed or on a full
+  re-sync. It is now retried automatically with exponential backoff from the content already
+  in the index.
+- After a GitHub token rotation, warm workers kept using the cached (revoked) token for up to
+  15 minutes. A 401 now drops the cache and re-reads the secret once.
+- Two concurrent writers of the same document could, in an unlucky interleaving, delete each
+  other's generation. Replacement now uses a deterministic rank and keeps exactly one.
+- An extraction-format change left unchanged issues/PRs with outdated relationships (they are
+  fetched incrementally). Watermarks record the format and force one full sync on change.
+- The benchmark's `--bedrock` mode ignored `AQUIFER_SEMANTIC_INDEX__*` settings and could
+  report results without any successful LLM extraction; such runs are now marked invalid.
+
+### Added
+- Relationship `assertion` (present, added, removed, proposed, discussed, negated), `status`
+  (current, claimed, removed, absent, proposed, not_merged, discussed), `as_of`,
+  `quote_verified` and `mention_found` (replacing `grounded`, which only meant "mentioned").
+- `find_related`: per-edge overall status (configuration wins; otherwise latest claim),
+  `conflicting_evidence`, `absent_from_current_config`, `statuses` filter, current edges first;
+  `support` counts per status. `evidence_status` values are now statuses.
+- Extraction processing state per document (`extraction_status`, `extraction_attempts`,
+  `extraction_error`, `next_retry_at`), retry sweep in discovery, reprocess jobs that rebuild
+  documents from the index and reuse embeddings, `{"retry_failed": true}` manual recovery,
+  actionable error codes (Bedrock Marketplace subscription, use-case form, model availability,
+  access, credentials), backlog in `list_sources` and discovery logs.
+- `aquifer-test check` explains Bedrock setup problems; `aquifer-test retry-failed`.
+- Benchmark status scenarios and regression tests for additions, removals, replacements,
+  negations, proposals, merged/unmerged PRs, conflicting evidence, retries and lifecycle.
+
 ## [Unreleased] — Engineering Context v1
 
 Aquifer now returns engineering facts **with their evidence** and runs reliably on OpenSearch
