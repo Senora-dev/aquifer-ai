@@ -52,11 +52,31 @@ of Sonnet per document and scored as well as Sonnet in the retrieval benchmark. 
 To try Aquifer without your own repositories, run `./aquifer-aws seed` before `configure`. It
 creates three private GitHub repositories with synthetic data, issues and pull requests.
 
+## Choosing a size
+
+`configure` asks for a size. Agents and scripts pass `AQUIFER_SIZE=small|medium|large`; without
+it, a non-interactive run uses `small`.
+
+| Size | Server | Data volume | Baseline / month (eu-west-1) | Fits |
+| --- | --- | --- | --- | --- |
+| `small` (default) | t4g.small, 2 GiB | 10 GiB | ~$19 | up to ~50 repositories / ~5,000 documents (~25,000 chunks; measured: 22 ms search) |
+| `medium` | t4g.medium, 4 GiB | 20 GiB | ~$33 | up to ~200 repositories / ~20,000 documents (~100,000 chunks; estimated from measured memory use) |
+| `large` | t4g.large, 8 GiB | 40 GiB | ~$62, **above the $50/month budget**: confirmation required | more than that (estimated) |
+
+`./aquifer-aws resize SIZE` changes the size in place. The server restarts, so there are about
+1–2 minutes without queries. The index is kept, and the data volume grows but never shrinks.
+Beyond `large`, use the scale profile ([docs/deployment.md](../../docs/deployment.md)).
+
+The server is a plain EC2 instance running Aquifer under systemd. It does not use ECS: Fargate
+would need a load balancer or public IPs, plus EFS for the index, which would add ~$20–30/month
+for one always-on process. The same image (`Dockerfile.server`) can run on an existing ECS or
+Kubernetes cluster with a persistent volume, but that path is not automated or tested.
+
 ## What gets created (23 resources)
 
 | Area | Resources | Monthly cost (eu-west-1) |
 | --- | --- | --- |
-| Server | EC2 t4g.small, CPU credits `standard`, IMDSv2, automatic recovery | $13.43 |
+| Server | EC2 t4g.small (`small`; see [sizes](#choosing-a-size)), CPU credits `standard`, IMDSv2, automatic recovery | $13.43 |
 | Storage | 8 GiB root + 10 GiB data volume (gp3, encrypted) | $1.58 |
 | Address | 1 Elastic IP (egress without NAT; stable address) | $3.65 |
 | Backups | Data Lifecycle Manager policy: daily snapshot at 03:00 UTC, 7 kept | ≤ $0.50 |

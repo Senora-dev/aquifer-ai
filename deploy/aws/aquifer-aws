@@ -7,6 +7,7 @@
 #   ./aquifer-aws plan            build the wheel + terraform plan (creates nothing)
 #   ./aquifer-aws up              apply that plan, store the GitHub token, wait for the first sync
 #   ./aquifer-aws deploy          rebuild and roll out code/configuration changes (no downtime for data)
+#   ./aquifer-aws resize SIZE     change the server size: small (~$19), medium (~$33), large (~$62)
 #   ./aquifer-aws sync [--full]   run discovery now and wait for the queue to drain
 #   ./aquifer-aws status          queue, last sync, index size, extraction backlog, dead letters
 #   ./aquifer-aws retry-failed    re-run extraction for documents that exhausted retries
@@ -195,11 +196,59 @@ cmd_seed() {
   cat "$BUILD/repos.json"
 }
 
+# Server sizes. Monthly baseline = instance + 8 GiB root + data volume + Elastic IP + ~$0.50
+# snapshots/logs (eu-west-1 list prices, 730 h). Capacity: small is measured; medium and large
+# are estimated from measured memory use (~18 MiB per 1,000 chunks), not load-tested.
+size_spec() {
+  case "$1" in
+    small)  echo "t4g.small 10 19.16" ;;
+    medium) echo "t4g.medium 20 33.47" ;;
+    large)  echo "t4g.large 40 62.10" ;;
+    *) return 1 ;;
+  esac
+}
+
+size_table() {
+  cat >&2 <<'TABLE'
+  Server size (eu-west-1 baseline per month, before model usage):
+
+    small   t4g.small   2 GiB   ~$19/month   up to ~50 repositories / ~5,000 documents
+                                             (~25,000 chunks, measured: 22 ms search)
+    medium  t4g.medium  4 GiB   ~$33/month   up to ~200 repositories / ~20,000 documents
+                                             (~100,000 chunks, estimated)
+    large   t4g.large   8 GiB   ~$62/month   more than that (estimated) — ABOVE the $50/month
+                                             baseline budget
+  Beyond "large", use the scale profile (docs/deployment.md). Resize later: ./aquifer-aws resize SIZE
+TABLE
+}
+
+choose_size() {
+  local size="${AQUIFER_SIZE:-}"
+  if [[ -z "$size" ]]; then
+    if [[ -t 0 ]]; then
+      size_table
+      read -r -p "  Size [small/medium/large] (default small): " size
+      size="${size:-small}"
+    else
+      size=small
+      warn "AQUIFER_SIZE not set; using small. Agents: ask the user (see AGENTS.md) and pass AQUIFER_SIZE."
+    fi
+  fi
+  size_spec "$size" >/dev/null || die "unknown size '$size' (small, medium or large)"
+  if [[ "$size" == "large" ]]; then
+    warn "large costs ~\$62/month baseline — above the \$50/month budget"
+    confirm "Use large anyway?" || die "aborted; choose small or medium"
+  fi
+  echo "$size"
+}
+
 cmd_configure() {
   mkdir -p "$BUILD"
-  local repos="${AQUIFER_REPOS:-}" model
+  local repos="${AQUIFER_REPOS:-}" model size instance data_gb monthly
   if [[ -z "$repos" && -f "$BUILD/repos.json" ]]; then repos="$(cat "$BUILD/repos.json")"; fi
   [[ -n "$repos" ]] || repos="[]"
+  size="$(choose_size)"
+  read -r instance data_gb monthly < <(size_spec "$size")
   model="$(detect_extraction_model)"
   [[ -n "$model" ]] || warn "LLM extraction off (no invocable Claude model); set AQUIFER_EXTRACTION_MODEL to choose one"
   cat > "$HERE/terraform.tfvars" <<EOF
@@ -208,11 +257,50 @@ name                = "$NAME"
 region              = "$REGION"
 repos               = $repos
 extraction_model_id = "$model"
-# instance_type       = "t4g.small"   # t4g.micro (~5k chunks), t4g.medium (~100k chunks)
+# size: $size (~\$$monthly/month baseline). Change with: ./aquifer-aws resize small|medium|large
+instance_type       = "$instance"
+data_volume_gb      = $data_gb
 # domain              = ""            # set for public HTTPS (A record → public_ip output)
 EOF
   ok "wrote terraform.tfvars"
   cat "$HERE/terraform.tfvars" >&2
+  echo "SIZE=$size"
+  echo "MONTHLY_BASELINE_USD=$monthly"
+}
+
+cmd_resize() {
+  # resize SIZE: change the server size in place (about 1-2 minutes without queries; the index
+  # is kept). The data volume only grows; it is never shrunk.
+  local size="${1:-}"
+  [[ -n "$size" ]] || { size_table; die "usage: ./aquifer-aws resize small|medium|large"; }
+  size_spec "$size" >/dev/null || die "unknown size '$size'"
+  if [[ "$size" == "large" ]]; then
+    warn "large costs ~\$62/month baseline — above the \$50/month budget"
+    confirm "Resize to large anyway?" || die "aborted"
+  fi
+  local instance data_gb monthly current_gb
+  read -r instance data_gb monthly < <(size_spec "$size")
+  current_gb="$(sed -n 's/^data_volume_gb *= *\([0-9]*\).*/\1/p' "$HERE/terraform.tfvars")"
+  if (( ${current_gb:-0} > data_gb )); then data_gb="$current_gb"; fi
+  say "resizing to $size ($instance, data volume ${data_gb} GiB, ~\$$monthly/month)"
+  confirm "The server restarts (about 1-2 minutes without queries). Continue?" || die "aborted"
+  "$(python_bin)" - "$HERE/terraform.tfvars" "$instance" "$data_gb" "$size" "$monthly" <<'PY'
+import re, sys
+path, instance, gb, size, monthly = sys.argv[1:]
+text = open(path).read()
+text = re.sub(r'(?m)^#?\s*instance_type\s*=.*$', f'instance_type       = "{instance}"', text)
+if re.search(r'(?m)^data_volume_gb\s*=', text):
+    text = re.sub(r'(?m)^data_volume_gb\s*=.*$', f'data_volume_gb      = {gb}', text)
+else:
+    text += f'data_volume_gb      = {gb}\n'
+text = re.sub(r'(?m)^# size: .*$', f'# size: {size} (~${monthly}/month baseline). Change with: ./aquifer-aws resize small|medium|large', text)
+open(path, "w").write(text)
+PY
+  cmd_deploy
+  wait_ready
+  # EBS grows the block device; grow the ext4 filesystem on it too (online, no-op if unchanged).
+  remote "resize2fs /dev/disk/by-label/aquifer-data >/dev/null 2>&1 || true; df -h /var/lib/aquifer | tail -1" >&2
+  echo "SIZE=$size"
 }
 
 # --- build / plan / up -------------------------------------------------------------------------
@@ -241,7 +329,7 @@ print("\nResources to create:", file=sys.stderr)
 for t, n in sorted(counts.items()):
     print(f"  {n:3d}  {t}", file=sys.stderr)
 print(f"  ---\n  {sum(counts.values()):3d}  total", file=sys.stderr)
-print("\nBaseline cost: ~$20/month in eu-west-1 (t4g.small); model usage is extra. See docs/cost.md.", file=sys.stderr)
+print("\nBaseline cost: per the size in terraform.tfvars (small ~$19, medium ~$33, large ~$62 per month in eu-west-1); model usage is extra. See docs/cost.md.", file=sys.stderr)
 '
   ok "plan saved — './aquifer-aws up' applies exactly this plan"
 }
@@ -617,6 +705,7 @@ main() {
     plan) cmd_plan ;;
     up) cmd_up ;;
     deploy) cmd_deploy ;;
+    resize) cmd_resize "$@" ;;
     sync) cmd_sync "$@" ;;
     status) cmd_status ;;
     retry-failed) cmd_retry_failed ;;
@@ -636,7 +725,7 @@ main() {
     authorize) cmd_authorize "$@" ;;
     upgrade-os) cmd_upgrade_os ;;
     down) cmd_down ;;
-    *) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' ;;
   esac
 }
 

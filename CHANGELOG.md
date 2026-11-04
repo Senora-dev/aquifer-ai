@@ -22,6 +22,9 @@ All notable changes to this project are documented here. The format follows
 - Safety: read-only gate (annotations and tool names), approved-tools enforcement at call
   time, private-network guard (also for OAuth endpoints), sanitized remote text, 5 MB result
   limit.
+- Setup asks for a server size: `small` ~$19, `medium` ~$33, or `large` ~$62 (flagged above
+  the $50 budget, confirmation required). Agents pass `AQUIFER_SIZE`; `./aquifer-aws resize
+  SIZE` changes it in place, growing the data volume and filesystem.
 - `aquifer-aws`: `sources`, `source-token`, `authorize`, `test-integrator`. The seed script
   enables discussions.
 - Document kinds `ticket`, `page`, `release`, `message`, `record`; source type `mcp`; extraction

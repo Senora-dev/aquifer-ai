@@ -42,8 +42,19 @@ headings, `✓`/`✗` results and machine-readable `KEY=value` lines (`MCP_URL=`
    existing infrastructure, use Docker instead (docs/deployment.md#existing-infrastructure-docker).
    Region: default eu-west-1.
 2. **Which GitHub repositories** to ingest (exact `owner/repo`).
-3. **Which other tools** to connect, and what content from each.
-4. **Access:** everything ingested, including content imported from other tools, is readable by
+3. **Server size.** Ask roughly how many repositories and documents (issues, PRs, pages,
+   tickets) they will index, then recommend a size and let them choose:
+
+   | Size | Server | Baseline / month | Fits |
+   | --- | --- | --- | --- |
+   | `small` | t4g.small, 2 GiB | ~$19 | up to ~50 repositories / ~5,000 documents (measured) |
+   | `medium` | t4g.medium, 4 GiB | ~$33 | up to ~200 repositories / ~20,000 documents (estimated) |
+   | `large` | t4g.large, 8 GiB | ~$62, **above the $50 budget** | more (estimated); needs their explicit OK |
+
+   Beyond `large`, the scale profile (docs/deployment.md) fits better. It does not run the MCP
+   Integrator. The size can be changed later: `./aquifer-aws resize SIZE`.
+4. **Which other tools** to connect, and what content from each.
+5. **Access:** everything ingested, including content imported from other tools, is readable by
    **every** Aquifer MCP token of this deployment. It does not follow per-user permissions in
    GitHub or the tool. Get explicit agreement, or a narrower selection.
 
@@ -52,7 +63,7 @@ headings, `✓`/`✗` results and machine-readable `KEY=value` lines (`MCP_URL=`
 | # | You run | Stop and hand over to the user when |
 | --- | --- | --- |
 | 1 | `cd deploy/aws && ./aquifer-aws check` | AWS credentials expired → they run `aws sso login`. `gh` not logged in → `gh auth login`. Bedrock error `bedrock_use_case_form_required` / `bedrock_marketplace_subscription_required` / `bedrock_access_denied` → they fix it in the AWS console (the message says where); you cannot. Missing tools → tell them the `brew install …` line printed |
-| 2 | `AQUIFER_REPOS='[...]' ./aquifer-aws configure`, then `./aquifer-aws plan` | **Always.** Show the resource list and the cost (~$20/month baseline + model usage ≈ $0.0044 per new or changed document) and get explicit approval |
+| 2 | `AQUIFER_SIZE=<size> AQUIFER_REPOS='[...]' ./aquifer-aws configure`, then `./aquifer-aws plan` | **Always.** Show the resource list and the cost (`MONTHLY_BASELINE_USD=` from configure, plus model usage ≈ $0.0044 per new or changed document) and get explicit approval. Never pick `large` without their OK |
 | 3 | `./aquifer-aws up` (~5 min; ends with the first sync and status) | — |
 | 4 | `./aquifer-aws connect` and give the user the printed `claude mcp add …` command (or run it, if you are their Claude Code) | — |
 | 5 | Per tool: `./aquifer-aws sources providers`; then `sources add …` | Token tools: `./aquifer-aws source-token NAME --from-gh` for GitHub; for others the user pipes the token (`./aquifer-aws source-token NAME < file`). Never ask them to paste a secret into chat, and never put one on a command line |

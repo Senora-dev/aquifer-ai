@@ -107,6 +107,14 @@ balancer, no NAT, no VPC endpoints and no second database.
 | MCP Integrator | runs inside the same process: no extra infrastructure | — | $0.00 |
 | **Baseline total** | | | **≈ $19.50** |
 
+Sizes offered by `./aquifer-aws configure` (same components, larger server and data volume):
+
+| Size | Server | Server / month | Total baseline / month | Fits |
+| --- | --- | --- | --- | --- |
+| `small` | t4g.small, 2 GiB | $13.43 | ≈ $19 | ~25,000 chunks (measured) |
+| `medium` | t4g.medium, 4 GiB | $26.86 | ≈ $33.50 | ~100,000 chunks (estimated) |
+| `large` | t4g.large, 8 GiB | $53.73 | ≈ $62, **above the $50 ceiling**; requires explicit confirmation | more (estimated) |
+
 Cheaper variants:
 - t4g.micro (1 GiB) gives ≈ $12.80 a month, for up to ~5,000 chunks.
 - A 1-year Savings Plan on t4g.small gives ≈ $16.
@@ -169,8 +177,9 @@ of a test run. The inventory is the Terraform state of the validation deployment
 | **MCP Integrator** | — | runs inside the same process: no resources of its own | $0 | $0 |
 | **Total baseline** | | | **≈ $19** | **≈ $24.40** |
 
-The worst case stays under half the $50 ceiling. Upsizing to t4g.medium (4 GiB, +$13.43) for a
-larger index gives at most ≈ $38. A deployment exceeds $50 only if someone changes the design,
+The worst case stays under half the $50 ceiling. The `medium` size (t4g.medium, 4 GiB) gives at most
+≈ $39, still within the ceiling. The `large` size (≈ $62) is above it, and `configure` says so
+and asks for confirmation. A deployment exceeds $50 only if someone changes the design,
 for example by switching CPU credits to `unlimited` (up to +$47 at sustained full CPU) or adding
 a NAT gateway or load balancer.
 
