@@ -160,7 +160,7 @@
           "github:acme/payments:file:docker-compose.yml",
           "github:acme/payments:file:catalog-info.yaml"
         ],
-        "relevant_in_top": 5
+        "relevant_in_top": 10
       }
     },
     {
@@ -481,10 +481,6 @@
               "repository": "acme/platform"
             }
           }
-        ],
-        "only_repos": [
-          "acme/platform",
-          "acme/payments"
         ]
       }
     },
@@ -650,12 +646,21 @@
             }
           }
         ],
-        "forbid_edges": [
+        "not_current": [
           {
             "direction": "outgoing",
             "source": "billing-api",
             "type": "depends_on",
             "target": "redis"
+          }
+        ],
+        "status": [
+          {
+            "direction": "outgoing",
+            "source": "billing-api",
+            "type": "depends_on",
+            "target": "valkey",
+            "status": "current"
           }
         ]
       },
@@ -722,7 +727,7 @@
       "scenario": "missing_evidence",
       "tool": "find_related",
       "args": {
-        "entity": "kafka"
+        "entity": "rabbitmq"
       },
       "expect": {
         "evidence_status": "none",
@@ -810,8 +815,13 @@
         "entity": "billing-api-v2"
       },
       "expect": {
-        "edges": [],
-        "evidence_status": "none"
+        "forbid_status": {
+          "target": "oracle-db",
+          "source": "billing-api-v2",
+          "statuses": [
+            "current"
+          ]
+        }
       },
       "mutations": [
         {
@@ -992,10 +1002,6 @@
           [
             "service",
             "ledger-service"
-          ],
-          [
-            "service",
-            "billing-api"
           ]
         ]
       }
