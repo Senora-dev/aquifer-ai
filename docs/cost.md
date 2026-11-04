@@ -104,6 +104,7 @@ balancer, no NAT, no VPC endpoints and no second database.
 | Load balancer, NAT, VPC endpoints | not used | — | $0.00 |
 | Data transfer out | MCP responses; well under the 100 GB/month free tier | $0.09 / GB above free tier | $0.00 |
 | Third-party fees | none (Let's Encrypt is free; Caddy is open source) | — | $0.00 |
+| MCP Integrator | runs inside the same process: no extra infrastructure | — | $0.00 |
 | **Baseline total** | | | **≈ $19.50** |
 
 Cheaper variants:
@@ -123,6 +124,7 @@ extrapolated from the measured memory use (~18 MiB per 1,000 chunks) and was not
 | LLM extraction disabled | — | — | $0. Deterministic Terraform, compose and Backstage extraction and search still work |
 | Burst CPU | not possible with `standard` credits; the instance slows down instead | — | $0 |
 | GitHub API | within the free REST rate limit (5,000 requests/hour per token) | free | $0 |
+| MCP Integrator sources | provider API calls (GitHub's MCP server: your token's normal limits, no fee). Imported documents cost the same extraction and embeddings as any document. Other providers' MCP servers are part of their plans | per provider | GitHub: $0 |
 
 Unchanged documents are skipped by content hash, so steady-state model cost tracks the volume
 of *changes*, not the size of the corpus. Configuration files never call the LLM.

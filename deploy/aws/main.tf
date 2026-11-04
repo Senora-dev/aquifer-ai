@@ -174,26 +174,28 @@ resource "aws_s3_object" "wheel" {
 
 locals {
   env = merge({
-    AQUIFER_ENVIRONMENT               = var.name
-    AQUIFER_LOG_LEVEL                 = "INFO"
-    AQUIFER_VECTOR_STORE__BACKEND     = "sqlite"
-    AQUIFER_VECTOR_STORE__SQLITE_PATH = "/var/lib/aquifer/index.db"
-    AQUIFER_NODE__DATA_DIR            = "/var/lib/aquifer"
-    AQUIFER_NODE__SYNC_INTERVAL_S     = tostring(var.sync_interval_minutes * 60)
-    AQUIFER_EMBEDDING__REGION         = local.region
-    AQUIFER_EMBEDDING__MODEL_ID       = var.embedding_model_id
-    AQUIFER_SEMANTIC_INDEX__REGION    = local.region
-    AQUIFER_SEMANTIC_INDEX__MODEL_ID  = var.extraction_model_id
-    AQUIFER_SEMANTIC_INDEX__ENABLED   = var.extraction_model_id == "" ? "false" : "true"
-    AQUIFER_GITHUB__REPO_ALLOWLIST    = jsonencode(var.repos)
-    AQUIFER_GITHUB__TOKEN_SECRET      = length(var.repos) > 0 ? "ssm:${local.ssm_prefix}/github-token" : ""
-    AQUIFER_MCP__AUTH_TOKENS_REF      = "ssm:${local.ssm_prefix}/mcp-tokens"
-    AQUIFER_MCP__HOST                 = "127.0.0.1"
-    AQUIFER_MCP__PORT                 = "8080"
-    AQUIFER_INTERCEPTORS              = jsonencode(["aquifer.semantic.interceptor:SemanticIndexInterceptor"])
-    AQUIFER_SSM_PREFIX                = local.ssm_prefix
-    AWS_REGION                        = local.region
-    AWS_DEFAULT_REGION                = local.region
+    AQUIFER_ENVIRONMENT                    = var.name
+    AQUIFER_LOG_LEVEL                      = "INFO"
+    AQUIFER_VECTOR_STORE__BACKEND          = "sqlite"
+    AQUIFER_VECTOR_STORE__SQLITE_PATH      = "/var/lib/aquifer/index.db"
+    AQUIFER_NODE__DATA_DIR                 = "/var/lib/aquifer"
+    AQUIFER_NODE__SYNC_INTERVAL_S          = tostring(var.sync_interval_minutes * 60)
+    AQUIFER_EMBEDDING__REGION              = local.region
+    AQUIFER_EMBEDDING__MODEL_ID            = var.embedding_model_id
+    AQUIFER_SEMANTIC_INDEX__REGION         = local.region
+    AQUIFER_SEMANTIC_INDEX__MODEL_ID       = var.extraction_model_id
+    AQUIFER_SEMANTIC_INDEX__ENABLED        = var.extraction_model_id == "" ? "false" : "true"
+    AQUIFER_GITHUB__REPO_ALLOWLIST         = jsonencode(var.repos)
+    AQUIFER_GITHUB__TOKEN_SECRET           = length(var.repos) > 0 ? "ssm:${local.ssm_prefix}/github-token" : ""
+    AQUIFER_MCP__AUTH_TOKENS_REF           = "ssm:${local.ssm_prefix}/mcp-tokens"
+    AQUIFER_MCP__HOST                      = "127.0.0.1"
+    AQUIFER_MCP__PORT                      = "8080"
+    AQUIFER_INTERCEPTORS                   = jsonencode(["aquifer.semantic.interceptor:SemanticIndexInterceptor"])
+    AQUIFER_SSM_PREFIX                     = local.ssm_prefix
+    AQUIFER_INTEGRATOR__CREDENTIALS_PREFIX = "ssm:${local.ssm_prefix}/sources"
+    AQUIFER_INTEGRATOR__PUBLIC_URL         = var.domain != "" ? "https://${var.domain}" : "http://127.0.0.1:18080"
+    AWS_REGION                             = local.region
+    AWS_DEFAULT_REGION                     = local.region
   }, var.extra_env)
 }
 

@@ -32,9 +32,10 @@ github = [
     "pyyaml>=6.0",
 ]
 # The Fargate MCP server.
-# FastMCP + streamable HTTP need mcp>=1.8; mcp 2.x renamed FastMCP (breaking), so pin <2.
+# FastMCP + streamable HTTP; the MCP Integrator extends the SDK OAuth client (tested with
+# 1.30). mcp 2.x renamed FastMCP (breaking), so pin <2.
 mcp = [
-    "mcp>=1.8,<2",
+    "mcp>=1.30,<2",
     "uvicorn>=0.29",
 ]
 # The single-server profile (`aquifer serve`): MCP server, scheduler, workers, SQLite index.

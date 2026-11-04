@@ -84,4 +84,9 @@ for name in payments platform legacy-billing; do
   seed_repo "$name"
 done
 
+# The MCP Integrator test (./aquifer-aws test-integrator) imports discussions and releases from
+# the payments repository through GitHub's MCP server; it needs discussions enabled.
+gh api -X PATCH "repos/$OWNER/$PREFIX-payments" -F has_discussions=true >/dev/null \
+  && log "discussions enabled on $OWNER/$PREFIX-payments"
+
 python3 -c "import json,sys; print(json.dumps([f'{sys.argv[1]}/{sys.argv[2]}-{n}' for n in ('payments','platform','legacy-billing')]))" "$OWNER" "$PREFIX"

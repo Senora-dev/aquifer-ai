@@ -89,6 +89,21 @@ Secrets are never in Terraform state:
 
 Server-side commands run through SSM Run Command, so no SSH and no open ports are needed.
 
+### Connecting other tools (MCP Integrator)
+
+```bash
+./aquifer-aws source-token eng-github --from-gh        # a token, laptop → SSM (never argv)
+./aquifer-aws sources add eng-github --provider github --token-ref ssm:/aquifer/<name>/sources/eng-github/token
+./aquifer-aws sources template eng-github --stream discussions --target your-org/your-repo
+./aquifer-aws sources preview eng-github && ./aquifer-aws sources enable eng-github
+./aquifer-aws authorize <oauth-source>                 # OAuth providers: tunnel + browser
+./aquifer-aws sources status
+./aquifer-aws test-integrator                          # e2e against GitHub's MCP server
+```
+
+Walkthrough, providers, coverage and safety: [docs/integrator.md](../../docs/integrator.md).
+Source credentials live under `/aquifer/<name>/sources/` in SSM and are removed by `down`.
+
 ### Exposing MCP over HTTPS (optional)
 
 By default the endpoint is reachable only through the SSM tunnel. To give agents a public URL:

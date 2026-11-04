@@ -27,6 +27,8 @@ from aquifer.core.models import DocumentKind, FetchJob, Source, SourceType
 from aquifer.ingestion.factory import build_connector, build_vector_store
 from aquifer.ingestion.runtime import get_runtime
 
+MCP_SCOPE_PREFIX = "mcp/"
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,7 +64,8 @@ def purge_unlisted_repos(settings: Settings, vector_store=None) -> int:  # noqa:
         return 0
     removed = 0
     for repo, _count in facets:
-        if repo not in allowed:
+        # MCP Integrator namespaces are owned by the integrator (removed with their source).
+        if repo not in allowed and not str(repo).startswith(MCP_SCOPE_PREFIX):
             store.delete_by_filter({"repo": repo})
             removed += 1
             log_event(logger, "repo_purged", repo=repo)

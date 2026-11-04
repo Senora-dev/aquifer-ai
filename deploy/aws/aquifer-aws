@@ -15,9 +15,13 @@
 #   ./aquifer-aws token           print the MCP bearer token
 #   ./aquifer-aws test            end-to-end MCP checks (+ idempotency)
 #   ./aquifer-aws test-updates    commit a change + a deletion to GitHub, re-sync, verify, revert
+#   ./aquifer-aws test-integrator MCP Integrator e2e against GitHub's real MCP server
 #   ./aquifer-aws metrics         memory, CPU, disk and index size on the server
 #   ./aquifer-aws logs [minutes]  server logs from CloudWatch
 #   ./aquifer-aws run <cmd...>    run an `aquifer` CLI command on the server
+#   ./aquifer-aws sources <...>   MCP Integrator: `aquifer sources …` on the server
+#   ./aquifer-aws source-token N  store an MCP source's token in SSM (--from-gh, or stdin)
+#   ./aquifer-aws authorize N     OAuth for an MCP source (opens the tunnel, prints the URL)
 #   ./aquifer-aws upgrade-os      dnf upgrade + reboot (data volume is kept)
 #   ./aquifer-aws down            terraform destroy + delete this deployment's SSM parameters
 #
@@ -81,7 +85,11 @@ remote() {
   [[ "$status" == "Success" ]] || die "remote command $status"
 }
 
-aq() { remote "runuser -u aquifer -- /opt/aquifer/venv/bin/aquifer $*"; }
+aq() {
+  # Each argument is shell-quoted for the remote side (plans and arguments contain JSON).
+  local quoted; quoted="$(printf '%q ' "$@")"
+  remote "runuser -u aquifer -- /opt/aquifer/venv/bin/aquifer $quoted"
+}
 
 wait_ready() {
   say "waiting for the server to finish its first boot (installs Python and Aquifer, ~3 min)"
@@ -455,11 +463,82 @@ cmd_test_updates() {
   return $rc
 }
 
+cmd_test_integrator() {
+  # End-to-end MCP Integrator check against GitHub's real MCP server: connects a source (if
+  # missing) for the seeded payments repository, then runs tests/integrator_e2e.py.
+  local py; py="$(python_bin)"
+  local repo; repo="$("${TF[@]}" output -json repos | "$py" -c 'import json,sys; print(json.load(sys.stdin)[0])')"
+  local name="${1:-e2e-github}"
+  if ! aq sources status "$name" --json 2>/dev/null | grep -q "\"name\": \"$name\""; then
+    say "connecting GitHub's MCP server as source '$name' (token from gh, stored in SSM)"
+    local ref; ref="$(cmd_source_token "$name" --from-gh 2>/dev/null | sed -n 's/^TOKEN_REF=//p')"
+    aq sources add "$name" --provider github --token-ref "$ref" >&2
+    aq sources template "$name" --stream discussions --target "$repo" >&2
+    aq sources template "$name" --stream releases --target "$repo" >&2
+    aq sources preview "$name" --limit 1 >/dev/null
+    aq sources enable "$name" >&2
+  fi
+  local url; url="$(mcp_base)"
+  trap stop_forward EXIT
+  say "MCP Integrator end-to-end (GitHub remote MCP server → Aquifer → Aquifer MCP)"
+  "$py" "$HERE/tests/integrator_e2e.py" --url "$url" --token "$(mcp_token)" --repo "$repo" \
+    --source "$name" --aquifer "$HERE/aquifer-aws run"
+}
+
 # --- logs / maintenance / down -------------------------------------------------------------------
 
 cmd_logs() { aws logs tail "$(tfout log_group)" --since "${1:-30}m" --format short; }
 
-cmd_run() { aq "$@" >&2; }
+cmd_run() { aq "$@"; }
+
+# --- MCP Integrator ------------------------------------------------------------------------------
+
+cmd_sources() { aq sources "$@"; }
+
+cmd_source_token() {
+  # source-token NAME [--from-gh]: store a source's bearer token in SSM (never on a command line).
+  local name="${1:?usage: source-token NAME [--from-gh]  (otherwise the token is read from stdin)}"
+  local ref="$(tfout ssm_prefix)/sources/$name/token"
+  local tok; tok="$(mktemp)"; chmod 600 "$tok"
+  if [[ "${2:-}" == "--from-gh" ]]; then printf '%s' "$(gh auth token)" > "$tok"
+  else
+    [[ -t 0 ]] && echo "paste the token, then Ctrl-D:" >&2
+    tr -d '\r\n' > "$tok"
+  fi
+  [[ -s "$tok" ]] || { rm -f "$tok"; die "empty token"; }
+  aws ssm put-parameter --name "$ref" --type SecureString --overwrite --value "file://$tok" >/dev/null
+  rm -f "$tok"
+  ok "token stored at ssm:$ref"
+  echo "TOKEN_REF=ssm:$ref"
+  echo "next: ./aquifer-aws sources add $name --provider github --token-ref ssm:$ref" >&2
+}
+
+cmd_authorize() {
+  # authorize NAME: OAuth for an MCP source. The browser must reach the server's callback, so
+  # the SSM tunnel is opened first (unless a public domain is configured).
+  local name="${1:?usage: authorize NAME}" req out status url shown=0
+  [[ "$(tfout mcp_url)" == https://* ]] || start_forward
+  req="$(aq sources authorize "$name" --no-wait | sed -n 's/^REQUEST_ID=//p')"
+  [[ -n "$req" ]] || die "could not start the authorization (is the source an OAuth source?)"
+  say "waiting for the authorization URL"
+  for _ in $(seq 1 140); do
+    out="$(aq sources oauth-status "$req")"
+    status="$("$(python_bin)" -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$out")"
+    url="$("$(python_bin)" -c 'import json,sys; print(json.load(sys.stdin).get("auth_url") or "")' <<<"$out")"
+    if [[ -n "$url" && $shown == 0 ]]; then
+      printf '\n  Open this URL in a browser on this computer and approve access:\n\n  %s\n\n' "$url" >&2
+      echo "AUTH_URL=$url"
+      [[ "${AQUIFER_OPEN_BROWSER:-}" == "1" ]] && command -v open >/dev/null && open "$url"
+      shown=1
+    fi
+    case "$status" in
+      succeeded) ok "authorized $name"; stop_forward; return 0 ;;
+      failed) stop_forward; die "authorization failed: $("$(python_bin)" -c 'import json,sys; print(json.load(sys.stdin).get("error"))' <<<"$out")" ;;
+    esac
+    sleep 5
+  done
+  stop_forward; die "timed out waiting for the browser authorization"
+}
 
 cmd_upgrade_os() {
   confirm "Apply OS updates and reboot the server (queries unavailable for ~1 minute)?" || die "aborted"
@@ -499,12 +578,16 @@ main() {
     token) cmd_token ;;
     test) cmd_test "$@" ;;
     test-updates) cmd_test_updates ;;
+    test-integrator) cmd_test_integrator "$@" ;;
     metrics) cmd_metrics ;;
     logs) cmd_logs "$@" ;;
     run) cmd_run "$@" ;;
+    sources) cmd_sources "$@" ;;
+    source-token) cmd_source_token "$@" ;;
+    authorize) cmd_authorize "$@" ;;
     upgrade-os) cmd_upgrade_os ;;
     down) cmd_down ;;
-    *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//' ;;
   esac
 }
 

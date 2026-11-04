@@ -45,6 +45,11 @@ Use the single entrypoint `deploy/aws/aquifer-aws` (see deploy/aws/README.md); e
 
 Failure triage: `./aquifer-aws status` (dead letters, last sync error), `./aquifer-aws logs 30`.
 
+Connecting other tools (MCP Integrator, docs/integrator.md): `./aquifer-aws sources providers`,
+`source-token`, `sources add/template/propose/preview/enable/status`, `authorize` for OAuth.
+Never pass credentials as command-line arguments. Show the user the `preview` output (samples,
+coverage, access statement) before `enable`.
+
 ## Rules
 
 - Never invent provenance (line numbers, revisions, timestamps): unknown values are `null`.

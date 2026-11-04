@@ -155,16 +155,20 @@ configurable globs. Deterministic extraction: Terraform (`.tf`), docker-compose,
 evaluation). Other connectors can be added through the `Connector` interface
 ([docs/contributing.md](docs/contributing.md)).
 
-**Planned, not yet available:**
+**Any tool with an MCP server, through the built-in MCP Integrator**
+([docs/integrator.md](docs/integrator.md)). Aquifer connects to the tool's MCP server, calls
+only approved read-only tools on a schedule, and imports the content with provenance. You pick
+a provider or enter a URL, then authorize (token or OAuth in the browser), preview and enable.
 
-- **Push ingestion over MCP and HTTP.** An agent or pipeline sends documents to Aquifer (for
-  example from a Jira, Notion or Slack MCP server it is connected to) with a write-scoped token.
-  This is *push*, not synchronization: Aquifer knows only what was sent, and updates or deletions
-  in the original tool are reflected only when they are pushed too.
-- **Dedicated connectors with continuous synchronization**, starting with Jira.
+- **Verified end to end:** GitHub's MCP server (discussions, release notes).
+- **Preconfigured, auth metadata verified, tools not yet verified:** Atlassian, Linear,
+  Notion, Sentry and Slack.
 
-Being able to receive documents from an MCP-enabled tool does not mean Aquifer synchronizes with
-that tool.
+Reading from a tool is not the same as syncing everything in it. Each stream states what it
+detects:
+- **Changes:** incrementally, or by re-listing and comparing.
+- **Deletions:** only from complete listings, confirmed by the source; never from search
+  results.
 
 ## Deploying to AWS, and what it costs
 
@@ -193,7 +197,8 @@ Operations, observability and troubleshooting: [docs/operations.md](docs/operati
 ## Current limitations
 
 - One trust domain per deployment; no per-user source permissions.
-- GitHub is the only synchronized source (push ingestion and a Jira connector are planned). Deleted or transferred issues/PRs are not detected (GitHub's incremental API does
+- Other tools are imported through their MCP servers (see docs/integrator.md for what each
+  stream can detect); only GitHub's MCP server has been verified end to end. Deleted or transferred issues/PRs are not detected (GitHub's incremental API does
   not report deletions); deleted files, removed READMEs and de-listed repositories are.
 - File provenance is the commit at which the file was read; issue/PR bodies have no revision
   (their `updated_at` is reported instead).

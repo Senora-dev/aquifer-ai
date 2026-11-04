@@ -132,6 +132,9 @@ class ContextTools:
         interceptors: InterceptorPipeline | None = None,
         settings: Settings | None = None,
     ) -> None:
+        # Optional provider of additional readable sources (the MCP Integrator's enabled
+        # sources): a callable returning [{"scope": "mcp/<name>", ...}].
+        self.extra_sources = None
         self.embedder = embedder
         self.vector_store = vector_store
         self.interceptors = interceptors or InterceptorPipeline()
@@ -145,7 +148,10 @@ class ContextTools:
 
     @property
     def _allowed_repos(self) -> list[str]:
-        return list(self.settings.github.repo_allowlist)
+        repos = list(self.settings.github.repo_allowlist)
+        if self.extra_sources is not None:
+            repos += [s["scope"] for s in self.extra_sources()]
+        return repos
 
     def _audit(self, tool: str, principal: str | None, outcome: str, started: float,
                **fields: Any) -> None:
@@ -186,8 +192,10 @@ class ContextTools:
 
     def _apply_repo_scope(self, ctx: QueryContext) -> bool:
         allowed = self._allowed_repos
-        if not allowed:
+        if not allowed and self.extra_sources is None:
             return True  # nothing configured (e.g. local mode): no repository restriction
+        if not allowed:
+            return False  # sources are managed, and none is enabled: nothing is readable
         requested = ctx.filters.get("repo")
         if requested is None:
             ctx.filters["repo"] = allowed
@@ -200,7 +208,7 @@ class ContextTools:
     def _post(self, results: list[SearchResult], ctx: QueryContext) -> list[SearchResult]:
         results = self.interceptors.after_query(results, ctx)
         allowed = set(self._allowed_repos)
-        if allowed:  # defense in depth: never return out-of-scope repositories
+        if allowed or self.extra_sources is not None:  # defense in depth: never out of scope
             results = [r for r in results if r.repo in allowed]
         return results
 
@@ -287,6 +295,15 @@ class ContextTools:
             out["entities"] = head["entities"]
         if head.get("relationships"):
             out["relationships"] = head["relationships"]
+        meta = head.get("source_metadata") or {}
+        if meta.get("mcp_server"):
+            # Imported by the MCP Integrator: which server and read-only tool it came from.
+            out["imported_via"] = {"mcp_server": meta.get("mcp_server"),
+                                   "tool": meta.get("mcp_tool"),
+                                   "detail_tool": meta.get("mcp_detail_tool"),
+                                   "source": meta.get("mcp_source"),
+                                   "item_id": meta.get("mcp_item_id")}
+            out["imported_via"] = {k: v for k, v in out["imported_via"].items() if v}
         if len(sources) >= 1000:
             out["truncated"] = True
         if line_start is not None:
@@ -304,7 +321,7 @@ class ContextTools:
 
         counts = dict(self.vector_store.facet("repo", None, size=1000) or [])
         sources: list[dict] = []
-        for repo in self._allowed_repos:
+        for repo in self.settings.github.repo_allowlist:
             entry: dict[str, Any] = {"source_type": SourceType.GITHUB.value, "repo": repo}
             if counts:
                 entry["indexed_documents"] = counts.get(repo, 0)
@@ -316,6 +333,15 @@ class ContextTools:
                 if last:
                     # When Aquifer last wrote content for this repo — not a claim that the
                     # index is current with the source.
+                    entry["last_indexed_at"] = last
+            sources.append(entry)
+        for extra in (self.extra_sources() if self.extra_sources is not None else []):
+            entry = {"source_type": SourceType.MCP.value, "repo": extra["scope"],
+                     **{k: v for k, v in extra.items() if k != "scope"}}
+            if counts:
+                entry["indexed_documents"] = counts.get(extra["scope"], 0)
+                last = self.vector_store.max_value("indexed_at", {"repo": extra["scope"]})
+                if last:
                     entry["last_indexed_at"] = last
             sources.append(entry)
         self._audit("list_sources", principal, "allowed", started, result_count=len(sources))
