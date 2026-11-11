@@ -873,6 +873,7 @@ class WebApp:
         value = secrets.token_urlsafe(36)
         store_secret(ref, json.dumps({**tokens, name: value}))
         tokens[name] = value  # live: the MCP endpoint accepts it now
+        self.usage.forget(name)  # a reused name must not inherit a revoked credential's calls
         web_agents.record_issued(self.settings, name, p.name)
         self._audit("token_issued", p, token_name=name, kind="agent")
         url = self._mcp_url(request)

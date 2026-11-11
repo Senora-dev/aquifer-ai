@@ -81,7 +81,7 @@ variable "https_allowed_cidrs" {
 variable "wheel_path" {
   description = "Path of the aquifer wheel built by ./aquifer-aws build (relative to this directory)."
   type        = string
-  default     = ".build/dist/aquifer-0.1.0-py3-none-any.whl"
+  default     = ".build/dist/aquifer-0.2.0-py3-none-any.whl"
 }
 
 variable "extra_env" {

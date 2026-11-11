@@ -209,14 +209,14 @@ From another repository, pin the module and the wheel to the same release tag:
 
 ```hcl
 module "aquifer" {
-  source     = "git::https://github.com/Senora-dev/aquifer-ai.git//deploy/aws/modules/aquifer?ref=<tag>"
+  source     = "git::https://github.com/Senora-dev/aquifer-ai.git//deploy/aws/modules/aquifer?ref=v0.2.0"
   name       = "aquifer"
-  wheel_path = "${path.module}/dist/aquifer-<version>-py3-none-any.whl"
+  wheel_path = "${path.module}/dist/aquifer-0.2.0-py3-none-any.whl"
 }
 ```
 
 ```bash
-pip wheel --no-deps -w dist "git+https://github.com/Senora-dev/aquifer-ai.git@<tag>"
+pip wheel --no-deps -w dist "git+https://github.com/Senora-dev/aquifer-ai.git@v0.2.0"
 ```
 
 Configure the `aws` provider (region) and your backend in the root module. After apply, open the

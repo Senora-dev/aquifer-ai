@@ -4,9 +4,9 @@
 #   terraform init && terraform plan -out tfplan && terraform apply tfplan
 #
 # Consuming the module from another repository: replace `source` with
-#   "git::https://github.com/Senora-dev/aquifer-ai.git//deploy/aws/modules/aquifer?ref=<release tag>"
+#   "git::https://github.com/Senora-dev/aquifer-ai.git//deploy/aws/modules/aquifer?ref=v0.2.0"
 # and build the wheel from the same tag:
-#   pip wheel --no-deps -w dist "git+https://github.com/Senora-dev/aquifer-ai.git@<release tag>"
+#   pip wheel --no-deps -w dist "git+https://github.com/Senora-dev/aquifer-ai.git@v0.2.0"
 
 terraform {
   required_version = ">= 1.6"

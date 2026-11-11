@@ -10,9 +10,9 @@ wheel to the same release tag.
 
 ```hcl
 module "aquifer" {
-  source     = "git::https://github.com/Senora-dev/aquifer-ai.git//deploy/aws/modules/aquifer?ref=<tag>"
+  source     = "git::https://github.com/Senora-dev/aquifer-ai.git//deploy/aws/modules/aquifer?ref=v0.2.0"
   name       = "aquifer"
-  wheel_path = "${path.module}/dist/aquifer-<version>-py3-none-any.whl"   # pip wheel --no-deps
+  wheel_path = "${path.module}/dist/aquifer-0.2.0-py3-none-any.whl"   # pip wheel --no-deps
 }
 ```
 
