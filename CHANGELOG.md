@@ -36,6 +36,8 @@ The product UI, a guided AWS installation and agent onboarding.
 ### Fixed
 - Repositories configured by the deployment (`AQUIFER_GITHUB__REPO_ALLOWLIST`) were replaced by
   an empty list when the UI's choices were merged in, so a deployment indexed nothing.
+- A new agent credential that reused a revoked credential's name showed that credential's calls
+  (and so *Verified*) before making any call itself.
 
 ## [0.1.0] — 2026-11-09
 

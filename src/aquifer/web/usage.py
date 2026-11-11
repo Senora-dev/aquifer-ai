@@ -45,6 +45,12 @@ class UsageLog:
                 "last_at = MAX(last_at, excluded.last_at)",
                 (principal or "anonymous", tool, day, now))
 
+    def forget(self, principal: str) -> None:
+        """Drop a principal's recorded calls, so a new credential reusing a revoked name starts
+        unobserved instead of inheriting the old credential's calls."""
+        with self._lock:
+            self._conn.execute("DELETE FROM calls WHERE principal = ?", (principal,))
+
     def summary(self, days: int = 7, now: float | None = None) -> dict[str, dict]:
         now = now or time.time()
         since = datetime.fromtimestamp(now - days * 86400, UTC).date().isoformat()

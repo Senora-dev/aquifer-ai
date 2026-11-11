@@ -423,6 +423,17 @@ def test_issued_token_works_immediately_and_is_observed_after_a_query(env, tmp_p
     assert revoked["status"] == "revoked" and revoked["revoked_at"]
 
 
+def test_reissued_name_does_not_inherit_the_revoked_credentials_calls(env):
+    c, web = env["client"], env["web"]
+    sign_in(c, ADMIN)
+    c.post("/api/agents", json={"name": "claude-code"}, headers=CSRF)
+    web.usage.record("claude-code", "search_context")
+    assert c.delete("/api/agents/claude-code", headers=CSRF).status_code == 200
+    assert c.post("/api/agents", json={"name": "claude-code"}, headers=CSRF).status_code == 201
+    rows = {a["name"]: a for a in c.get("/api/agents").json()["agents"]}
+    assert rows["claude-code"]["status"] == "active" and rows["claude-code"]["observed"] is None
+
+
 def test_agent_credentials_are_mcp_only_and_never_admin(env):
     c, s = env["client"], env["settings"]
     sign_in(c, ADMIN)
