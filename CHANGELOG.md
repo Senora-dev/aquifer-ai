@@ -5,7 +5,42 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased] — MCP Integrator
 
+### Changed
+- UI branding follows aquifer-ai.dev (official logo, favicon, wordmark, brand colors as tokens).
+- Home: sync state from actual synchronization ("Up to date" only after a successful sync),
+  "Answers with citations" instead of "Grounded", no model identifiers on the main page, shorter
+  suggestions from indexed content, agent credentials counted as such.
+- Setup snippets never contain the token value.
+
+### Fixed
+- Repositories configured by the deployment (`AQUIFER_GITHUB__REPO_ALLOWLIST`) were replaced by
+  an empty list when the UI's choices were merged in, so a deployment indexed nothing.
+
 ### Added
+- **`aquifer install aws`** (docs/install-aws.md): guided installation with Terraform. It checks
+  prerequisites (tools, AWS identity, region, quotas, IAM by simulation, connectivity, Bedrock
+  models), shows the settings, the Terraform state location (local, or S3 with lock file or
+  DynamoDB locking) and the plan with a qualified cost estimate before asking, deploys the
+  reviewed plan, waits for health and opens the UI through the SSM tunnel. Re-running resumes
+  an interrupted or failed run without duplicates (tainted resources, leftovers adopted by tag,
+  others reported) and refuses plans that would replace the data volume.
+- **Reusable Terraform module** `deploy/aws/modules/aquifer` with a minimal example; the root
+  module calls it and `moved` blocks upgrade existing deployments in place (verified: 23
+  resources moved, no changes).
+- **GitHub content preview** in the UI before enabling indexing.
+- **Agent credentials and a complete Agents flow**: endpoint for the environment (SSM tunnel vs
+  HTTPS), read-only MCP-only credentials (refused at UI sign-in, never admin), setup for the
+  tested clients with the token read from `AQUIFER_TOKEN`, and a status that turns *Verified*
+  only on an authenticated tool call. Settings page for model and access details.
+- **Product UI** at `/` of `aquifer serve` (docs/ui.md), no build step. Connect GitHub (token
+  check, repository choice, access review, indexing progress), Integrator GitHub discussions
+  and releases with preview and explicit enablement, a connector catalog separating available
+  and early-access providers, questions with exact supporting lines and commit-pinned links,
+  an insufficient-evidence state, grounded answers when Bedrock answers (every sentence cited),
+  agents shown as configured vs observed (MCP calls recorded per token), and a labeled demo
+  workspace with its own Sources page. Excerpts treat identifiers (`billing-api`) as one exact
+  term and name the enclosing YAML key. Sign-in uses the MCP tokens; changes need an admin principal
+  (`AQUIFER_WEB__ADMIN_PRINCIPALS`). `python -m aquifer.local ui` runs it without AWS.
 - **MCP Integrator** (`aquifer sources …`, docs/integrator.md): connects to external MCP
   servers and imports their content into the shared pipeline on a schedule.
   - Providers: preconfigured ones (GitHub verified end to end; Atlassian, Linear, Notion,

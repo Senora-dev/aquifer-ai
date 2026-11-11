@@ -3,6 +3,7 @@
     python -m aquifer.local ingest examples/demo/repos
     python -m aquifer.local serve --repos-root examples/demo/repos      # stdio (default)
     python -m aquifer.local serve --repos-root examples/demo/repos --transport http
+    python -m aquifer.local ui                                          # the product UI
 """
 
 from __future__ import annotations
@@ -34,8 +35,21 @@ def main(argv: list[str] | None = None) -> None:
     p_serve.add_argument("--transport", choices=["stdio", "http"], default="stdio")
     p_serve.add_argument("--bedrock", action="store_true")
 
+    p_ui = sub.add_parser("ui", help="run the single-server runtime with the UI on loopback")
+    p_ui.add_argument("--data", type=Path, default=Path(".aquifer-local/server"),
+                      help="data directory (index, queue, settings)")
+    p_ui.add_argument("--port", type=int, default=8080)
+    p_ui.add_argument("--auth", choices=["none", "token"], default="none",
+                      help="token: sign in with an access token (created in DATA/mcp-tokens.json)")
+    p_ui.add_argument("--bedrock", action="store_true",
+                      help="Bedrock embeddings, extraction and answers (needs AWS credentials)")
+
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+
+    if args.command == "ui":
+        run_ui(args)
+        return
 
     if args.command == "ingest":
         results = ingest(args.root, args.store, use_bedrock=args.bedrock)
@@ -52,6 +66,40 @@ def main(argv: list[str] | None = None) -> None:
     from aquifer.mcp import server
 
     server.main(["--transport", "stdio" if args.transport == "stdio" else "streamable-http"])
+
+
+def run_ui(args) -> None:  # noqa: ANN001
+    """``aquifer serve`` with local defaults: SQLite under ``--data``, loopback only, and no AWS
+    unless ``--bedrock``."""
+    import os
+
+    data = args.data.resolve()
+    data.mkdir(parents=True, exist_ok=True)
+    env = {
+        "AQUIFER_VECTOR_STORE__BACKEND": "sqlite",
+        "AQUIFER_VECTOR_STORE__SQLITE_PATH": str(data / "index.db"),
+        "AQUIFER_NODE__DATA_DIR": str(data),
+        "AQUIFER_MCP__HOST": "127.0.0.1",
+        "AQUIFER_MCP__PORT": str(args.port),
+        "AQUIFER_MCP__AUTH_MODE": args.auth,
+        "AQUIFER_INTEGRATOR__PUBLIC_URL": f"http://127.0.0.1:{args.port}",
+        "AQUIFER_INTERCEPTORS": '["aquifer.semantic.interceptor:SemanticIndexInterceptor"]',
+        "AQUIFER_EMBEDDING__PROVIDER": "bedrock" if args.bedrock else "hashing",
+        "AQUIFER_SEMANTIC_INDEX__ENABLED": "true" if args.bedrock else "false",
+        "AQUIFER_ENV_FILE": str(data / "aquifer.env"),
+    }
+    if args.auth == "token":
+        env["AQUIFER_MCP__AUTH_TOKENS_REF"] = f"file:{data / 'mcp-tokens.json'}"
+    for key, value in env.items():
+        os.environ.setdefault(key, value)
+    from aquifer.node import cli
+
+    if args.auth == "token":
+        cli.cmd_init(None)
+        print(f"sign in with the token in {data / 'mcp-tokens.json'} (\"default\")",
+              file=sys.stderr)
+    print(f"Aquifer UI: http://127.0.0.1:{args.port}/", file=sys.stderr)
+    cli.main(["serve"])
 
 
 if __name__ == "__main__":

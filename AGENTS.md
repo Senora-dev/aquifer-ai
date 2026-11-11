@@ -27,7 +27,9 @@ Run these before declaring work done; all run offline without credentials:
 ```
 
 Try the product locally: `python -m aquifer.local ingest examples/demo/repos`, then
-`python -m aquifer.local serve --repos-root examples/demo/repos` (MCP over stdio).
+`python -m aquifer.local serve --repos-root examples/demo/repos` (MCP over stdio). The browser UI:
+`python -m aquifer.local ui` (http://127.0.0.1:8080/; docs/ui.md). After editing
+`examples/demo/repos`, run `python scripts/build_demo_corpus.py` (the UI's bundled demo).
 
 ## Setting Aquifer up for a user (agent runbook)
 
@@ -41,7 +43,10 @@ headings, `✓`/`✗` results and machine-readable `KEY=value` lines (`MCP_URL=`
 1. **Where to run it.** The default is AWS (deploy/aws, about $20/month). If they want to use
    existing infrastructure, use Docker instead (docs/deployment.md#existing-infrastructure-docker).
    Region: default eu-west-1.
-2. **Which GitHub repositories** to ingest (exact `owner/repo`).
+2. **Which GitHub repositories** to ingest (exact `owner/repo`). A fresh installation has none;
+   the user connects them in the UI (Sources → Add a source: token, repositories, preview, enable),
+   or you list them in `deploy/aws/terraform.tfvars` (`repos = [...]`) and store the token with
+   `./aquifer-aws github-token`.
 3. **Server size.** Ask roughly how many repositories and documents (issues, PRs, pages,
    tickets) they will index, then recommend a size and let them choose:
 
@@ -62,10 +67,10 @@ headings, `✓`/`✗` results and machine-readable `KEY=value` lines (`MCP_URL=`
 
 | # | You run | Stop and hand over to the user when |
 | --- | --- | --- |
-| 1 | `cd deploy/aws && ./aquifer-aws check` | AWS credentials expired → they run `aws sso login`. `gh` not logged in → `gh auth login`. Bedrock error `bedrock_use_case_form_required` / `bedrock_marketplace_subscription_required` / `bedrock_access_denied` → they fix it in the AWS console (the message says where); you cannot. Missing tools → tell them the `brew install …` line printed |
-| 2 | `AQUIFER_SIZE=<size> AQUIFER_REPOS='[...]' ./aquifer-aws configure`, then `./aquifer-aws plan` | **Always.** Show the resource list and the cost (`MONTHLY_BASELINE_USD=` from configure, plus model usage ≈ $0.0044 per new or changed document) and get explicit approval. Never pick `large` without their OK |
-| 3 | `./aquifer-aws up` (~5 min; ends with the first sync and status) | — |
-| 4 | `./aquifer-aws connect` and give the user the printed `claude mcp add …` command (or run it, if you are their Claude Code) | — |
+| 1 | `.venv/bin/aquifer install aws --check-only --region <region>` (from the repository root, after `pip install -e ".[server]"`) | Any `✗` blocker: AWS login → they run `aws sso login`; Bedrock access, quotas → they fix it in the AWS console (the message says where); you cannot. Missing tools → the printed install line |
+| 2 | `.venv/bin/aquifer install aws --size <size> --plan-only --yes --no-browser` | **Always.** Show the plan summary, the settings (account, region, access, state location) and the cost lines, and get explicit approval. Never pick `large` without their OK |
+| 3 | `.venv/bin/aquifer install aws --size <size> --yes --no-browser` (~5 min; makes a fresh plan, applies it, waits for health, opens the SSM tunnel) | If it stops, read the `✗` line and re-run the same command (it resumes) |
+| 4 | Give the user `UI_URL=` and how to sign in (`deploy/aws/aquifer-aws token \| pbcopy`). Agents: each gets its own read-only credential (UI → Agents → Connect an agent; docs/agent-integration.md). Never put a token on a command line, in a URL or in a committed file | — |
 | 5 | Per tool: `./aquifer-aws sources providers`; then `sources add …` | Token tools: `./aquifer-aws source-token NAME --from-gh` for GitHub; for others the user pipes the token (`./aquifer-aws source-token NAME < file`). Never ask them to paste a secret into chat, and never put one on a command line |
 | 6 | OAuth tools: `./aquifer-aws authorize NAME` | **Always.** Give the user the `AUTH_URL=` link immediately: they open it in a browser **on the same computer** (the tunnel carries the redirect) and approve. The command waits up to ~15 minutes; if it times out, run it again for a new link |
 | 7 | `sources template …` (preconfigured streams) or `sources propose …` (any server), then `sources preview NAME` | **Always.** Show the samples, the coverage lines (what changes and deletions it can detect) and the access statement; get approval before enabling |
@@ -93,7 +98,7 @@ they ask for), and that sources re-sync daily.
 
 ### Never
 
-- Run `up` without approval, or `down` / `terraform destroy` unless the user asks.
+- Run `up` or `aquifer install aws` without `--plan-only` before approval, or `down` / `terraform destroy` unless the user asks.
 - Enable a source without showing its preview, or connect content the user did not choose.
 - Print, log or commit tokens, or pass them as arguments.
 - Edit the plan to call a tool the gate refuses.

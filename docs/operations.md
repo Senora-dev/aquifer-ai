@@ -142,7 +142,11 @@ Recovery:
 
 ## Upgrades
 
-`cdk deploy` with a newer version rolls the Lambdas and the MCP service (ECS circuit breaker
+**Small profile:** `git pull`, `pip install -e ".[server]"`, then `aquifer install aws`: it shows
+the plan (usually in-place updates), keeps `terraform.tfvars` and the data volume, and rolls the
+new package out. See [install-aws.md](./install-aws.md#upgrading).
+
+**Scale profile:** `cdk deploy` with a newer version rolls the Lambdas and the MCP service (ECS circuit breaker
 rolls back a failing deployment). New index fields are added to an existing index
 automatically. Changes that alter chunking or extraction bump `INDEX_FORMAT_VERSION`, which makes
 each document re-index the next time it is fetched, and the next discovery run ignores

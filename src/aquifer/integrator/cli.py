@@ -240,49 +240,30 @@ def cmd_tools(args, quiet: bool = False) -> int:  # noqa: ANN001
 # --- plan ---------------------------------------------------------------------------------
 
 def _approve(source, stream) -> None:  # noqa: ANN001
-    for tool in {stream.tool} | {s.tool for s in (stream.detail, stream.verify) if s}:
-        if tool not in source.approved_tools:
-            source.approved_tools.append(tool)
+    from aquifer.integrator.actions import approve
+
+    approve(source, stream)
 
 
 def _add_stream(source, stream, tools) -> list[str]:  # noqa: ANN001
-    from aquifer.integrator.plan import validate_plan
+    from aquifer.integrator.actions import add_stream
 
-    source.plan.streams = [s for s in source.plan.streams if s.name != stream.name] + [stream]
-    _approve(source, stream)
-    return validate_plan(source, tools, allow_unannotated=source.allow_unannotated)
+    return add_stream(source, stream, tools)
 
 
 def cmd_template(args) -> int:  # noqa: ANN001
+    from aquifer.integrator.actions import add_template_streams
     from aquifer.integrator.jobs import registry_for
-    from aquifer.integrator.providers import get_provider
 
     settings = _settings()
-    reg = registry_for(settings)
-    source = reg.require(args.name)
-    provider = get_provider(source.provider) if source.provider != "custom" else None
-    if not provider or args.stream not in provider.templates:
-        known = ", ".join(provider.templates) if provider else "none (custom source)"
-        return _err(f"no template {args.stream!r} for this source; templates: {known}. Use "
-                    "`aquifer sources propose` for anything else.")
-
-    async def tools():  # noqa: ANN202
-        async with _connect(source, settings) as conn:
-            return await conn.list_tools()
-
-    live = asyncio.run(tools())
-    for target in args.target:
-        try:
-            stream = provider.templates[args.stream](target)
-        except ValueError as exc:
-            return _err(str(exc))
-        if args.page_size:
-            stream.pagination.size = max(1, min(100, args.page_size))
-        problems = _add_stream(source, stream, live)
-        if problems:
-            return _err("; ".join(problems))
+    source = registry_for(settings).require(args.name)
+    try:
+        added = add_template_streams(settings, source, args.stream, args.target,
+                                     page_size=args.page_size)
+    except ValueError as exc:
+        return _err(str(exc))
+    for stream in added:
         print(f"added stream {stream.name}: {stream.coverage()['changes']}", file=sys.stderr)
-    reg.save(source)
     print(f"next: aquifer sources preview {source.name}", file=sys.stderr)
     return 0
 
@@ -376,48 +357,15 @@ def cmd_plan(args) -> int:  # noqa: ANN001
 # --- preview / enable / run ---------------------------------------------------------------
 
 def cmd_preview(args) -> int:  # noqa: ANN001
-    from aquifer.integrator.client import sanitize
+    from aquifer.integrator.actions import preview
     from aquifer.integrator.jobs import registry_for
-    from aquifer.integrator.plan import find_items, get_path
-    from aquifer.integrator.status import ACCESS_NOTE
-    from aquifer.integrator.sync import _detail_args, _text, page_args, to_document
 
     settings = _settings()
-    reg = registry_for(settings)
-    source = reg.require(args.name)
-    if not source.plan.streams:
-        return _err(f"no streams yet: aquifer sources template|propose {source.name} …")
-
-    async def run():  # noqa: ANN202
-        out = []
-        async with _connect(source, settings) as conn:
-            for stream in source.plan.streams:
-                entry = {"stream": stream.name, "coverage": stream.coverage(), "samples": []}
-                try:
-                    res = await conn.call(stream.tool, page_args(stream, None))
-                    items = find_items(res.data, stream.items)
-                    entry["items_on_first_page"] = len(items)
-                    for item in items[: args.limit]:
-                        doc = to_document(source, stream, item)
-                        if stream.detail:
-                            d = await conn.call(stream.detail.tool, _detail_args(
-                                stream, item, doc.metadata["mcp_item_id"]))
-                            body = d.text if not stream.detail.body else _text(
-                                get_path(d.data, stream.detail.body))
-                            doc = doc.model_copy(update={"body": body})
-                        entry["samples"].append({
-                            "document_id": doc.id, "title": doc.title, "url": doc.url,
-                            "updated_at": doc.updated_at, "author": doc.author,
-                            "characters": len(doc.body),
-                            "excerpt": sanitize(doc.body, 240)})
-                except Exception as exc:  # noqa: BLE001
-                    entry["error"] = f"{getattr(exc, 'code', type(exc).__name__)}: " \
-                                     f"{sanitize(str(exc), 300)}"
-                out.append(entry)
-        return out
-
-    result = {"source": source.name, "nothing_was_indexed": True, "access": ACCESS_NOTE,
-              "streams": asyncio.run(run())}
+    source = registry_for(settings).require(args.name)
+    try:
+        result = preview(settings, source, limit=args.limit)
+    except ValueError as exc:
+        return _err(str(exc))
     _print(result)
     if any("error" in s for s in result["streams"]):
         return 1
@@ -426,39 +374,20 @@ def cmd_preview(args) -> int:  # noqa: ANN001
 
 
 def cmd_enable(args) -> int:  # noqa: ANN001
+    from aquifer.integrator.actions import enable
     from aquifer.integrator.jobs import registry_for
-    from aquifer.integrator.plan import validate_plan
-    from aquifer.node.service import open_queue
 
     settings = _settings()
-    reg = registry_for(settings)
-    source = reg.require(args.name)
-    if not source.plan.streams:
-        return _err("the source has no streams to sync")
-
-    async def tools():  # noqa: ANN202
-        async with _connect(source, settings) as conn:
-            return await conn.list_tools()
-
+    source = registry_for(settings).require(args.name)
     try:
-        problems = validate_plan(source, asyncio.run(tools()),
-                                 allow_unannotated=source.allow_unannotated)
+        enable(settings, source, every_hours=args.every_hours)
+    except ValueError as exc:
+        return _err(str(exc))
     except Exception as exc:  # noqa: BLE001
         from aquifer.integrator.client import classify_failure
 
         err = classify_failure(exc)
         return _err(f"{err.code}: {err}")
-    if problems:
-        return _err("; ".join(problems))
-    source.enabled = True
-    source.state = "active"
-    if args.every_hours:
-        source.schedule_hours = args.every_hours
-    reg.save(source)
-    queue = open_queue(settings)
-    queue.put("mcp_sync", {"source": source.name, "full": True},
-              dedupe_key=f"mcp_sync:{source.name}")
-    queue.set_state(f"scheduler:mcp:{source.name}", time.time())
     print(f"enabled {source.name}: first import queued, then every {source.schedule_hours} h. "
           f"Follow it with: aquifer sources status {source.name}", file=sys.stderr)
     return 0

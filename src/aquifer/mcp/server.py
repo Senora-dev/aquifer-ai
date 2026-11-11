@@ -65,6 +65,7 @@ def create_server(
     tools: ContextTools | None = None,
     settings: Settings | None = None,
     default_principal: str | None = None,
+    on_call=None,  # noqa: ANN001 - optional fn(principal, tool), e.g. the usage log
 ):
     """Create the FastMCP server with the five retrieval tools registered."""
     from mcp.server.fastmcp import FastMCP
@@ -81,6 +82,11 @@ def create_server(
         return current_principal() or default_principal
 
     def guarded(fn, *args, **kwargs):  # noqa: ANN001, ANN202
+        if on_call is not None:
+            try:
+                on_call(principal(), fn.__name__)
+            except Exception:  # noqa: BLE001 - usage bookkeeping never fails a query
+                logger.warning("usage recording failed", exc_info=True)
         try:
             return fn(*args, principal=principal(), **kwargs)
         except AuthorizationError as exc:
@@ -156,11 +162,12 @@ def create_server(
     return mcp
 
 
-def create_http_app(settings: Settings | None = None, tools: ContextTools | None = None):
+def create_http_app(settings: Settings | None = None, tools: ContextTools | None = None,
+                    on_call=None):  # noqa: ANN001
     """The authenticated streamable-HTTP ASGI app (validated configuration)."""
     settings = settings or get_settings()
     tokens = validate_auth_config(settings.mcp)
-    app = create_server(tools=tools, settings=settings).streamable_http_app()
+    app = create_server(tools=tools, settings=settings, on_call=on_call).streamable_http_app()
     if settings.mcp.auth_mode == "token":
         app = BearerAuthMiddleware(app, tokens)
     return app

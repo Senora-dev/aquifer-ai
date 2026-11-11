@@ -49,7 +49,21 @@ Details: [integrator.md](./integrator.md#safety). Tests: `tests/test_integrator.
 | Network egress | Application security groups allow outbound TCP 443 only; Bedrock, Secrets Manager, SQS, OpenSearch via VPC endpoints; S3 via gateway endpoint | `tests/test_infrastructure.py` |
 | Container hardening | Non-root user, read-only root filesystem | `tests/test_infrastructure.py`, CI image check |
 | Audit | `mcp_tool_call` (tool, principal, outcome, counts, latency) and `mcp_auth_failed` events — no query text or content | `tests/test_mcp_server.py` |
+| UI access (single-server profile) | Sign-in with an MCP token; HttpOnly SameSite=Strict signed session, ended when the token is revoked or rotated; reads use the same tool path and scope; changing sources or tokens needs a principal in `AQUIFER_WEB__ADMIN_PRINCIPALS`; mutating calls need an `X-Aquifer-CSRF` header; strict CSP, `X-Frame-Options: DENY`; `ui_*` audit events (no question text) | `tests/test_web.py` |
 | Encryption | OpenSearch Serverless with AWS-owned key; SQS SSE; S3 SSE + TLS-only; Secrets Manager | `tests/test_infrastructure.py` |
+
+## Agent credentials
+
+Each agent should use its own credential, created on the UI's Agents page. Agent credentials
+reach only the MCP tools, which are read-only; they are refused at UI sign-in and so cannot use
+admin actions (sources, tokens). They are stored with the other tokens (SSM SecureString on
+AWS), shown once at creation, never inlined in the setup snippets (which read
+`AQUIFER_TOKEN` from the environment), and revocable with immediate effect. Missing, invalid
+and revoked credentials get `401` from `/mcp`. There is no OAuth: clients that only support
+OAuth for remote MCP servers cannot connect.
+
+On AWS, Terraform state holds no secrets (tokens live in SSM under `/aquifer/<name>/`); with
+`--backend s3` it is encrypted at rest and locked.
 
 ## Known limitations (not provided)
 
