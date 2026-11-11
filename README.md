@@ -71,7 +71,9 @@ claude mcp add aquifer -- "$PWD/.venv/bin/python" -m aquifer.local serve \
   --store "$PWD/.aquifer-local/index.json" --repos-root "$PWD/examples/demo/repos"
 ```
 
-Then ask your agent *"What depends on billing-api, and where is that defined?"*. The guided
+Then ask your agent *"What depends on billing-api, and where is that defined?"*. Or open the
+product UI: `python -m aquifer.local ui`, then <http://127.0.0.1:8080/> (connect sources, ask
+with cited excerpts, see which agents query it; [docs/ui.md](docs/ui.md)). The guided
 three-minute demo is in [examples/demo/README.md](examples/demo/README.md). Local mode uses a
 lexical (non-semantic) embedder and no LLM, so it shows the deterministic, explicit-reference
 path; see [docs/getting-started.md](docs/getting-started.md).
@@ -144,6 +146,9 @@ configured allowlist, and nothing else. Concretely:
 - Aquifer does **not** mirror GitHub's per-user permissions. Only configure repositories that
   everyone holding a token may read. Per-principal rules can be added with an interceptor.
 
+- The UI ([docs/ui.md](docs/ui.md)) signs in with the same tokens and reads through the same
+  scope; changing sources or tokens there needs an admin token (`AQUIFER_WEB__ADMIN_PRINCIPALS`).
+
 See [docs/security.md](docs/security.md) for the full model, prompt-injection handling and
 limitations.
 
@@ -173,18 +178,23 @@ detects:
 ## Deploying to AWS, and what it costs
 
 ```bash
-cd deploy/aws
-./aquifer-aws check                                          # tools, AWS login, Bedrock access
-AQUIFER_REPOS='["your-org/your-repo"]' ./aquifer-aws configure
-./aquifer-aws plan                                           # lists every resource, creates nothing
-./aquifer-aws up && ./aquifer-aws connect                    # deploy, first sync, connect your agent
+git clone https://github.com/Senora-dev/aquifer-ai.git && cd aquifer-ai
+python3 -m venv .venv && .venv/bin/pip install -e ".[server]"
+.venv/bin/aquifer install aws        # checks, plan review, deploy, then opens the UI
 ```
+
+The installer checks prerequisites (AWS login, quotas, Bedrock access), shows the Terraform plan
+and a cost estimate before anything is created, deploys, and opens the UI through an SSM tunnel
+(the server has no inbound ports). You then connect your first source in the UI, and your agents
+with their own read-only credentials. Guide, Terraform state, direct-Terraform use, upgrades and
+troubleshooting: [docs/install-aws.md](docs/install-aws.md). Agents:
+[docs/agent-integration.md](docs/agent-integration.md).
 
 **Baseline cost: about $20 a month** (eu-west-1). That covers one t4g.small instance, an
 encrypted data volume with daily snapshots, an Elastic IP and logs. There is no NAT gateway,
 load balancer or OpenSearch. Model usage is extra. With Claude Haiku 4.5, extraction costs about
 $0.0044 per new or changed document, and embeddings are negligible. Itemized estimate,
-measurements and tradeoffs: [docs/cost.md](docs/cost.md). `./aquifer-aws down` removes
+measurements and tradeoffs: [docs/cost.md](docs/cost.md). `deploy/aws/aquifer-aws down` removes
 everything.
 
 Other options, documented in [docs/deployment.md](docs/deployment.md):

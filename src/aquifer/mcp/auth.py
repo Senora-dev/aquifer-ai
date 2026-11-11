@@ -60,7 +60,9 @@ def validate_auth_config(settings: McpSettings) -> dict[str, str]:
                 f"address (got host={settings.host!r}). Configure AQUIFER_MCP__AUTH_TOKENS."
             )
         return {}
-    tokens = dict(settings.auth_tokens or {})
+    # The settings' own dict (not a copy): tokens issued at run time (the UI) take effect
+    # without a restart.
+    tokens = settings.auth_tokens
     if not tokens:
         raise AuthConfigError(
             "No MCP auth tokens configured. Set AQUIFER_MCP__AUTH_TOKENS to a JSON object "

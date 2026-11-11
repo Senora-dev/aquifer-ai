@@ -1,3 +1,6 @@
+# Root module used by ./aquifer-aws and `aquifer install aws`. It configures the provider and
+# calls the reusable module in ./modules/aquifer. State: see backend.tf (written by
+# `aquifer install aws --backend s3`); without it, state is the local file terraform.tfstate.
 terraform {
   required_version = ">= 1.6"
   required_providers {
@@ -17,16 +20,4 @@ provider "aws" {
       ManagedBy   = "terraform"
     }
   }
-}
-
-data "aws_caller_identity" "current" {}
-data "aws_partition" "current" {}
-
-locals {
-  account   = data.aws_caller_identity.current.account_id
-  partition = data.aws_partition.current.partition
-  region    = var.region
-  # Every SSM parameter of this deployment lives under this path (config, GitHub token, MCP
-  # tokens, MCP source credentials). `./aquifer-aws down` removes the path.
-  ssm_prefix = "/aquifer/${var.name}"
 }

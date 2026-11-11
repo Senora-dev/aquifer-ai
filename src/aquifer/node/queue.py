@@ -172,12 +172,22 @@ class JobQueue:
             out.setdefault(status, {})[kind] = n
         return out
 
+    def active(self, limit: int = 5000) -> list[dict]:
+        """Pending and running jobs (kind, payload, status, attempts, last error)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT kind, payload, status, attempts, last_error FROM jobs "
+                "WHERE status IN ('pending', 'running') ORDER BY id LIMIT ?", (limit,)).fetchall()
+        return [{"kind": r[0], "payload": json.loads(r[1]), "status": r[2], "attempts": r[3],
+                 "last_error": r[4]} for r in rows]
+
     def dead_letters(self, limit: int = 50) -> list[dict]:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT id, kind, payload, attempts, last_error, updated_at FROM jobs "
                 "WHERE status = 'dead' ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
         return [{"id": r[0], "kind": r[1], "summary": _summary(r[1], json.loads(r[2])),
+                 "repo": json.loads(r[2]).get("repo"),
                  "attempts": r[3], "error": r[4],
                  "failed_at": datetime.fromtimestamp(r[5]).astimezone().isoformat()}
                 for r in rows]

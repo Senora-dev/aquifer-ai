@@ -6,6 +6,7 @@
     aquifer status [--json]       # queue, last sync, index size, extraction backlog, errors
     aquifer retry-failed          # re-run extraction for documents that exhausted retries
     aquifer dead-letters [--requeue ID|all]
+    aquifer install aws           # guided AWS installation with Terraform (docs/install-aws.md)
 
 Configuration comes from ``AQUIFER_*`` environment variables. If ``/etc/aquifer/aquifer.env``
 (or the file named by ``AQUIFER_ENV_FILE``) exists, it is loaded first, so commands run over SSM
@@ -44,9 +45,13 @@ def load_env_file(path: str | None = None) -> None:
 
 def _settings():  # noqa: ANN202
     from aquifer.core.config import get_settings
+    from aquifer.web import github_source
 
     get_settings.cache_clear()
-    return get_settings()
+    settings = get_settings()
+    # Repositories (and the token reference) connected in the UI, on top of the environment.
+    github_source.apply(settings)
+    return settings
 
 
 # --- serve --------------------------------------------------------------------------------
@@ -86,10 +91,15 @@ def cmd_serve(args) -> int:  # noqa: ANN001
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     configure_lambda_logging(settings.log_level)
     _load_mcp_tokens(settings)
+    from aquifer.web.usage import usage_log
+
     tools = build_tools(settings)
     tools.vector_store.ensure_index()
     try:
-        app = create_http_app(settings, tools=tools)
+        # Every MCP tool call is counted per token, so the UI can show which agents were
+        # observed making queries (not only configured).
+        app = create_http_app(settings, tools=tools,
+                              on_call=usage_log(settings.node.data_dir).record)
     except AuthConfigError as exc:
         logging.getLogger("aquifer").error("refusing to start: %s", exc)
         return 2
@@ -102,12 +112,18 @@ def cmd_serve(args) -> int:  # noqa: ANN001
         tools.extra_sources = integrator_jobs.sources_provider(settings)
         app = oauth_callback_app(app, lambda: integrator_jobs.registry_for(settings),
                                  max_age_s=settings.integrator.authorize_timeout_s + 60)
+    if settings.web.enabled:
+        from aquifer.web.app import WebApp
+
+        app = WebApp(settings, tools, queue=service.queue,
+                     service=None if args.no_workers else service).mount(app)
     if not args.no_workers:
         service.start()
     import uvicorn
 
-    logging.getLogger("aquifer").info("serving MCP on %s:%d/mcp", settings.mcp.host,
-                                      settings.mcp.port)
+    logging.getLogger("aquifer").info("serving MCP on %s:%d/mcp%s", settings.mcp.host,
+                                      settings.mcp.port,
+                                      " and the UI on /" if settings.web.enabled else "")
     try:
         uvicorn.run(health_app(app, service if not args.no_workers else None),
                     host=settings.mcp.host, port=settings.mcp.port, log_level="warning")
@@ -252,6 +268,12 @@ def main(argv: list[str] | None = None) -> None:
     from aquifer.integrator.cli import add_commands
 
     add_commands(sub)
+    p = sub.add_parser("install", help="guided installation (aquifer install aws)",
+                       description="Guided installation. See docs/install-aws.md.")
+    install_sub = p.add_subparsers(dest="target", required=True, metavar="TARGET")
+    from aquifer.install.aws import add_parser as add_install_aws
+
+    add_install_aws(install_sub)
     args = parser.parse_args(argv)
     load_env_file(args.env_file)
     sys.exit(args.fn(args) or 0)

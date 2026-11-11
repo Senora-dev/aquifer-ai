@@ -15,14 +15,14 @@ costs, measurements and tradeoffs are in [cost.md](./cost.md).
 ## Small profile (default)
 
 ```bash
-cd deploy/aws
-./aquifer-aws check
-AQUIFER_REPOS='["your-org/service-a"]' ./aquifer-aws configure
-./aquifer-aws plan && ./aquifer-aws up
-./aquifer-aws connect
+git clone https://github.com/Senora-dev/aquifer-ai.git && cd aquifer-ai
+python3 -m venv .venv && .venv/bin/pip install -e ".[server]"
+.venv/bin/aquifer install aws        # checks, plan review, deploy, then opens the UI
 ```
 
-Full guide: [deploy/aws/README.md](../deploy/aws/README.md).
+Guide: [install-aws.md](./install-aws.md) (Terraform state, private access and the tunnel,
+direct use of the Terraform module, upgrades, removal). Day-2 operations:
+[deploy/aws/README.md](../deploy/aws/README.md).
 
 ## Existing infrastructure (Docker)
 

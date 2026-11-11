@@ -107,7 +107,7 @@ balancer, no NAT, no VPC endpoints and no second database.
 | MCP Integrator | runs inside the same process: no extra infrastructure | — | $0.00 |
 | **Baseline total** | | | **≈ $19.50** |
 
-Sizes offered by `./aquifer-aws configure` (same components, larger server and data volume):
+Sizes offered by `aquifer install aws` and `./aquifer-aws configure` (same components, larger server and data volume):
 
 | Size | Server | Server / month | Total baseline / month | Fits |
 | --- | --- | --- | --- | --- |
@@ -128,7 +128,7 @@ extrapolated from the measured memory use (~18 MiB per 1,000 chunks) and was not
 | --- | --- | --- | --- |
 | Embeddings (Titan Text Embeddings v2) | each new or changed chunk, once; each query, once | $0.026 / million tokens | First ingest: ~15M tokens ≈ $0.40. Steady state: < $0.50 / month |
 | LLM extraction, Claude Sonnet 4.6 (EU inference profile) | one call per new or changed README, issue, PR or ADR: ~2,000 input + ~400 output tokens | $3.30 / M input, $16.50 / M output | ≈ $0.013 per document. First 4,000 documents ≈ $53. 50 changes a day ≈ $20 / month; 200 a day ≈ $80 / month |
-| LLM extraction, Claude Haiku 4.5 (EU), **the default chosen by `./aquifer-aws configure`** | same | $1.10 / M input, $5.50 / M output | ≈ $0.0044 per document: one third of Sonnet. First 4,000 documents ≈ $18; 50 changes a day ≈ $6.60 / month; 200 a day ≈ $26 / month |
+| LLM extraction, Claude Haiku 4.5 (EU), **the default chosen by `aquifer install aws` and `./aquifer-aws configure`** | same | $1.10 / M input, $5.50 / M output | ≈ $0.0044 per document: one third of Sonnet. First 4,000 documents ≈ $18; 50 changes a day ≈ $6.60 / month; 200 a day ≈ $26 / month |
 | LLM extraction disabled | — | — | $0. Deterministic Terraform, compose and Backstage extraction and search still work |
 | Burst CPU | not possible with `standard` credits; the instance slows down instead | — | $0 |
 | GitHub API | within the free REST rate limit (5,000 requests/hour per token) | free | $0 |

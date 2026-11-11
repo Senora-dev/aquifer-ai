@@ -142,6 +142,10 @@ class NodeService:
         log_event(logger, "node_started", workers=self.settings.node.workers,
                   sync_interval_s=self.settings.node.sync_interval_s)
 
+    def wake(self) -> None:
+        """Let idle workers pick up newly queued jobs now."""
+        self._wake.set()
+
     def stop(self, timeout: float = 30) -> None:
         self._stop.set()
         self._wake.set()

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # aquifer-aws — deploy and operate the small Aquifer profile (one server, ~$20/month) with Terraform.
 #
+# To install, prefer the guided installer: `aquifer install aws` (docs/install-aws.md). It uses
+# this directory's Terraform root, terraform.tfvars, .build/ and state, so every command below
+# works on a deployment it created.
+#
 #   ./aquifer-aws check           prerequisites, AWS login, Bedrock model access
 #   ./aquifer-aws seed            (optional) create private GitHub test repos from the demo data
 #   ./aquifer-aws configure       write terraform.tfvars (repos, region, extraction model)
@@ -160,32 +164,9 @@ PY
 
 detect_extraction_model() {
   if [[ -n "${AQUIFER_EXTRACTION_MODEL+x}" ]]; then echo "${AQUIFER_EXTRACTION_MODEL}"; return; fi
-  # Prefer a regional (eu./us./...) Claude inference profile; Haiku first (a third of Sonnet's
-  # price per document, see docs/cost.md), newest first; return the first one this account can invoke.
-  "$(python_bin)" - <<'PY'
-import re, sys, boto3
-br, rt = boto3.client("bedrock"), boto3.client("bedrock-runtime")
-ids = [p["inferenceProfileId"] for p in br.list_inference_profiles(typeEquals="SYSTEM_DEFINED")
-       ["inferenceProfileSummaries"] if p["status"] == "ACTIVE" and "anthropic.claude" in p["inferenceProfileId"]]
-def version(i):
-    name = re.sub(r"-\d{8}.*$|-v\d+(:\d+)?$", "", i.split("anthropic.", 1)[1])
-    return [int(x) for x in re.findall(r"\d+", name)]
-def rank(i):
-    family = 0 if "haiku" in i else 1 if "sonnet" in i else 2
-    v = version(i)
-    return (i.startswith("global."), family, not v, [-x for x in (v + [0, 0, 0])[:3]])
-for model in sorted(ids, key=rank):
-    if "haiku" in model and version(model)[:1] and version(model)[0] < 4:
-        continue  # older Haiku models extract relationships noticeably worse
-    try:
-        rt.converse(modelId=model, messages=[{"role": "user", "content": [{"text": "Reply OK"}]}],
-                    inferenceConfig={"maxTokens": 5})
-    except Exception as e:
-        print(f"  skip {model}: {type(e).__name__}", file=sys.stderr)
-        continue
-    print(model)
-    break
-PY
+  # The first Claude model this account can invoke: Haiku first (a third of Sonnet's price per
+  # document, see docs/cost.md), newest first. Shared with `aquifer install aws`.
+  "$(python_bin)" -m aquifer.install.bedrock detect
 }
 
 # --- seed / configure --------------------------------------------------------------------------
@@ -252,7 +233,7 @@ cmd_configure() {
   model="$(detect_extraction_model)"
   [[ -n "$model" ]] || warn "LLM extraction off (no invocable Claude model); set AQUIFER_EXTRACTION_MODEL to choose one"
   cat > "$HERE/terraform.tfvars" <<EOF
-# Written by ./aquifer-aws configure — edit freely, then ./aquifer-aws deploy.
+# Written by \`aquifer install aws\` / ./aquifer-aws configure — edit freely, then re-run \`aquifer install aws\` (or ./aquifer-aws deploy).
 name                = "$NAME"
 region              = "$REGION"
 repos               = $repos
@@ -461,8 +442,12 @@ mcp_base() {
 
 cmd_connect() {
   local url; url="$(mcp_base)"
+  ok "UI: ${url%/mcp}/  (sign in with the token below)"
   ok "MCP endpoint: $url"
-  [[ "$url" == http://127.0.0.1* ]] && ok "tunnel running in the background (stop: kill \$(cat $BUILD/forward.pid))"
+  if [[ "$url" == http://127.0.0.1* ]]; then
+    ok "the SSM tunnel gives access; it runs in the background (stop: kill \$(cat $BUILD/forward.pid))"
+    ok "reopen it any time with: $HERE/aquifer-aws connect"
+  fi
   cat >&2 <<EOF
 
 Connect Claude Code (the token is read from SSM at run time, not stored in the command):
@@ -687,7 +672,10 @@ cmd_down() {
   confirm "Destroy?" || die "aborted"
   stop_forward
   local prefix; prefix="$(tfout ssm_prefix || echo "/aquifer/$NAME")"
-  "${TF[@]}" destroy -input=false -auto-approve "-var=wheel_path=$(ls "$BUILD"/dist/*.whl 2>/dev/null | head -1 | sed "s#$HERE/##" || echo .build/dist/none.whl)"
+  # Destroy needs some wheel path that exists (the module validates it); nothing is uploaded.
+  local wheel; wheel="$(ls "$BUILD"/dist/*.whl 2>/dev/null | head -1 | sed "s#$HERE/##")"
+  if [[ -z "$wheel" ]]; then mkdir -p "$BUILD/dist"; wheel=.build/dist/placeholder.whl; touch "$HERE/$wheel"; fi
+  "${TF[@]}" destroy -input=false -auto-approve "-var=wheel_path=$wheel"
   say "deleting SSM parameters under $prefix (GitHub token, MCP tokens, source credentials)"
   local names
   names="$(aws ssm get-parameters-by-path --path "$prefix" --recursive --query 'Parameters[].Name' --output text)"
@@ -725,7 +713,7 @@ main() {
     authorize) cmd_authorize "$@" ;;
     upgrade-os) cmd_upgrade_os ;;
     down) cmd_down ;;
-    *) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) awk 'NR > 1 && /^set -euo/ { exit } NR > 1' "$0" | sed 's/^# \{0,1\}//' ;;
   esac
 }
 

@@ -1,33 +1,47 @@
 output "instance_id" {
-  value = aws_instance.server.id
+  value = module.aquifer.instance_id
 }
 
 output "public_ip" {
-  description = "Elastic IP of the server (point the DNS record for `domain` here)."
-  value       = aws_eip.server.public_ip
+  value = module.aquifer.public_ip
+}
+
+output "access_mode" {
+  value = module.aquifer.access_mode
+}
+
+output "ui_url" {
+  value = module.aquifer.ui_url
 }
 
 output "mcp_url" {
-  description = "MCP endpoint: public HTTPS if a domain is set, otherwise through `./aquifer-aws connect`."
-  value       = var.domain != "" ? "https://${var.domain}/mcp" : "http://127.0.0.1:18080/mcp (via ./aquifer-aws connect)"
+  value = module.aquifer.mcp_url
+}
+
+output "mcp_tokens_ref" {
+  value = module.aquifer.mcp_tokens_ref
 }
 
 output "ssm_prefix" {
-  value = local.ssm_prefix
+  value = module.aquifer.ssm_prefix
+}
+
+output "region" {
+  value = module.aquifer.region
 }
 
 output "log_group" {
-  value = aws_cloudwatch_log_group.server.name
+  value = module.aquifer.log_group
 }
 
 output "artifact_bucket" {
-  value = aws_s3_bucket.artifacts.id
+  value = module.aquifer.artifact_bucket
 }
 
 output "repos" {
-  value = var.repos
+  value = module.aquifer.repos
 }
 
 output "data_volume_id" {
-  value = aws_ebs_volume.data.id
+  value = module.aquifer.data_volume_id
 }

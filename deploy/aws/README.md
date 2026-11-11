@@ -35,13 +35,27 @@ Docker is **not** required.
 
 ## From zero to a working endpoint
 
+**Recommended: the guided installer** (from the repository root, after
+`python3 -m venv .venv && .venv/bin/pip install -e ".[server]"`):
+
+```bash
+.venv/bin/aquifer install aws
+```
+
+It checks prerequisites, shows the plan and cost, deploys, and opens the UI through the SSM
+tunnel, with no data source connected; you add sources in the UI. Full guide:
+[docs/install-aws.md](../../docs/install-aws.md). It uses this directory (Terraform root,
+`terraform.tfvars`, `.build/`, state), so every command below works on the result.
+
+**Scripted alternative** (the steps the installer automates; repositories from Terraform):
+
 ```bash
 cd deploy/aws
 ./aquifer-aws check                      # tools, AWS login, Bedrock models
 AQUIFER_REPOS='["your-org/service-a","your-org/infra"]' ./aquifer-aws configure
 ./aquifer-aws plan                       # builds the wheel, lists every resource, creates nothing
 ./aquifer-aws up                         # applies that plan, stores the GitHub token, first sync
-./aquifer-aws connect                    # tunnel to localhost + the `claude mcp add` command
+./aquifer-aws connect                    # tunnel to localhost (UI and MCP) + agent setup
 ```
 
 `up` takes about 5 minutes; the first boot installs Python and Aquifer. `configure` picks the
@@ -51,6 +65,10 @@ of Sonnet per document and scored as well as Sonnet in the retrieval benchmark. 
 
 To try Aquifer without your own repositories, run `./aquifer-aws seed` before `configure`. It
 creates three private GitHub repositories with synthetic data, issues and pull requests.
+
+The resources are defined in the reusable module [`modules/aquifer`](modules/aquifer/README.md);
+this directory is the root module that calls it. To use the module from your own Terraform, see
+[docs/install-aws.md#direct-terraform](../../docs/install-aws.md#direct-terraform).
 
 ## Choosing a size
 
@@ -96,7 +114,7 @@ Secrets are never in Terraform state:
 | --- | --- |
 | `./aquifer-aws status` | Queue, last sync, index size, extraction backlog, dead letters |
 | `./aquifer-aws sync [--full]` | Sync now instead of waiting (default every 15 minutes). `--full` ignores the incremental watermark; unchanged content is still skipped |
-| `./aquifer-aws connect` | SSM tunnel to `http://127.0.0.1:18080/mcp` and the command to register it in Claude Code |
+| `./aquifer-aws connect` | Open (or reopen) the SSM tunnel: UI at `http://127.0.0.1:18080/`, MCP at `/mcp`, and the agent setup command |
 | `./aquifer-aws token` | Print the MCP bearer token (read from SSM) |
 | `./aquifer-aws logs 30` | Last 30 minutes of server logs |
 | `./aquifer-aws metrics` | Memory, CPU, disk, index files |
@@ -143,8 +161,8 @@ On boot, Caddy obtains a Let's Encrypt certificate. Every request still needs a 
 - **Volume loss or corruption:** restore the latest snapshot.
   1. Create a volume from the snapshot in the same AZ (EC2 console → Snapshots → Create
      volume).
-  2. `terraform state rm aws_ebs_volume.data aws_volume_attachment.data`
-  3. `terraform import aws_ebs_volume.data <new-volume-id>`
+  2. `terraform state rm module.aquifer.aws_ebs_volume.data module.aquifer.aws_volume_attachment.data`
+  3. `terraform import -var wheel_path=.build/dist/<wheel> module.aquifer.aws_ebs_volume.data <new-volume-id>`
   4. `./aquifer-aws deploy`
   RPO ≤ 24 hours. Anything newer is re-fetched by the next sync.
 - **Without snapshots:** the index is derived data. A fresh deployment with `sync --full`

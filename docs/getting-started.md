@@ -65,13 +65,11 @@ credentials and costs money).
 The default is one small server (~$20/month in eu-west-1, plus model usage):
 
 ```bash
-cd deploy/aws
-./aquifer-aws check
-AQUIFER_REPOS='["your-org/your-repo"]' ./aquifer-aws configure
-./aquifer-aws plan && ./aquifer-aws up && ./aquifer-aws connect
+.venv/bin/aquifer install aws        # from the checkout above; opens the UI when done
 ```
 
-See [deploy/aws/README.md](../deploy/aws/README.md). To run on infrastructure you already have
+See [install-aws.md](./install-aws.md). Then add a source in the UI (Sources → Add a source) and
+connect an agent ([agent-integration.md](./agent-integration.md)). To run on infrastructure you already have
 (Docker) or on the OpenSearch scale profile, see [deployment.md](./deployment.md).
 
 ---
