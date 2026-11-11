@@ -3,4 +3,4 @@
 Licensed under the Business Source License 1.1. See the LICENSE file.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

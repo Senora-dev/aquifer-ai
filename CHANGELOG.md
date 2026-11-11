@@ -3,44 +3,46 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] — MCP Integrator
+## [0.2.0] — 2026-11-11
 
-### Changed
-- UI branding follows aquifer-ai.dev (official logo, favicon, wordmark, brand colors as tokens).
-- Home: sync state from actual synchronization ("Up to date" only after a successful sync),
-  "Answers with citations" instead of "Grounded", no model identifiers on the main page, shorter
-  suggestions from indexed content, agent credentials counted as such.
-- Setup snippets never contain the token value.
-
-### Fixed
-- Repositories configured by the deployment (`AQUIFER_GITHUB__REPO_ALLOWLIST`) were replaced by
-  an empty list when the UI's choices were merged in, so a deployment indexed nothing.
+The product UI, a guided AWS installation and agent onboarding.
 
 ### Added
+- **Product UI** at `/` of `aquifer serve` (docs/ui.md), no build step, in Aquifer's branding.
+  Sources: connect GitHub (token check, repositories, **content preview**, access review,
+  indexing progress) and Integrator sources with preview and explicit enablement. Ask: answers
+  with citations and the exact supporting lines, commit-pinned links, an explicit
+  insufficient-evidence state, sync state from actual synchronization. A labeled demo
+  workspace. Settings for model and access details. Changes need an admin principal
+  (`AQUIFER_WEB__ADMIN_PRINCIPALS`). `python -m aquifer.local ui` runs it without AWS.
+- **Agents**: the MCP endpoint for the environment (SSM tunnel vs HTTPS), read-only agent
+  credentials (MCP only: refused at UI sign-in, never admin, revocable immediately), setup for
+  the tested clients (Claude Code, MCP Python SDK) reading the token from `AQUIFER_TOKEN`, and a
+  status that turns *Verified* only on an authenticated tool call (docs/agent-integration.md).
 - **`aquifer install aws`** (docs/install-aws.md): guided installation with Terraform. It checks
   prerequisites (tools, AWS identity, region, quotas, IAM by simulation, connectivity, Bedrock
   models), shows the settings, the Terraform state location (local, or S3 with lock file or
   DynamoDB locking) and the plan with a qualified cost estimate before asking, deploys the
   reviewed plan, waits for health and opens the UI through the SSM tunnel. Re-running resumes
-  an interrupted or failed run without duplicates (tainted resources, leftovers adopted by tag,
-  others reported) and refuses plans that would replace the data volume.
-- **Reusable Terraform module** `deploy/aws/modules/aquifer` with a minimal example; the root
-  module calls it and `moved` blocks upgrade existing deployments in place (verified: 23
-  resources moved, no changes).
-- **GitHub content preview** in the UI before enabling indexing.
-- **Agent credentials and a complete Agents flow**: endpoint for the environment (SSM tunnel vs
-  HTTPS), read-only MCP-only credentials (refused at UI sign-in, never admin), setup for the
-  tested clients with the token read from `AQUIFER_TOKEN`, and a status that turns *Verified*
-  only on an authenticated tool call. Settings page for model and access details.
-- **Product UI** at `/` of `aquifer serve` (docs/ui.md), no build step. Connect GitHub (token
-  check, repository choice, access review, indexing progress), Integrator GitHub discussions
-  and releases with preview and explicit enablement, a connector catalog separating available
-  and early-access providers, questions with exact supporting lines and commit-pinned links,
-  an insufficient-evidence state, grounded answers when Bedrock answers (every sentence cited),
-  agents shown as configured vs observed (MCP calls recorded per token), and a labeled demo
-  workspace with its own Sources page. Excerpts treat identifiers (`billing-api`) as one exact
-  term and name the enclosing YAML key. Sign-in uses the MCP tokens; changes need an admin principal
-  (`AQUIFER_WEB__ADMIN_PRINCIPALS`). `python -m aquifer.local ui` runs it without AWS.
+  an interrupted or failed run without duplicates and refuses plans that would replace the data
+  volume. A fresh installation starts with no sources; you connect them in the UI.
+- **Reusable Terraform module** `deploy/aws/modules/aquifer` with `examples/minimal`.
+
+### Changed
+- `deploy/aws` is now a root module calling the module; `moved` blocks upgrade existing
+  deployments in place (verified: 23 resources moved, no changes).
+- Access tokens issued in the UI are agent credentials; setup snippets never contain the token.
+
+### Fixed
+- Repositories configured by the deployment (`AQUIFER_GITHUB__REPO_ALLOWLIST`) were replaced by
+  an empty list when the UI's choices were merged in, so a deployment indexed nothing.
+
+## [0.1.0] — 2026-11-09
+
+The first release.
+
+### MCP Integrator
+#### Added
 - **MCP Integrator** (`aquifer sources …`, docs/integrator.md): connects to external MCP
   servers and imports their content into the shared pipeline on a schedule.
   - Providers: preconfigured ones (GitHub verified end to end; Atlassian, Linear, Notion,
@@ -65,7 +67,7 @@ All notable changes to this project are documented here. The format follows
 - Document kinds `ticket`, `page`, `release`, `message`, `record`; source type `mcp`; extraction
   prompts for release notes, tickets and pages.
 
-### Fixed
+#### Fixed
 - OAuth requested the scopes the server advertised (Linear: `read write`) instead of the
   configured least-privilege scope (`read`). Registration and authorization now keep the
   configured scope.
@@ -73,12 +75,12 @@ All notable changes to this project are documented here. The format follows
   repositories were configured; the scope guard now denies everything when sources are managed
   and none is enabled.
 
-## [Unreleased] — Affordable single-server deployment
+### Affordable single-server deployment
 
 The default deployment now costs **about $20 a month** (eu-west-1, before model usage) instead
 of ~$500. The OpenSearch Serverless stack remains as the optional scale profile.
 
-### Added
+#### Added
 - `aquifer serve`: one process runs the MCP server, a scheduler and ingestion workers. Its
   durable SQLite job queue offers leases (interrupted runs are redelivered), exponential
   backoff, dead letters, deduplication of periodic jobs and rate-limit postponement.
@@ -95,7 +97,7 @@ of ~$500. The OpenSearch Serverless stack remains as the optional scale profile.
   resource usage and the tradeoffs.
 - Benchmark `--store sqlite`.
 
-### Changed
+#### Changed
 - `./aquifer-aws configure` prefers Claude Haiku 4.5 for extraction. It costs about a third of
   Sonnet per document; benchmark: 52/52 cases, relationship recall 0.86.
 - Discovery and the worker run on a pluggable runtime (`ingestion/runtime.py`): SQS, S3 and
@@ -103,16 +105,16 @@ of ~$500. The OpenSearch Serverless stack remains as the optional scale profile.
 - The Terraform evaluation environment for the OpenSearch stack (`deploy/terraform`) is
   replaced by `deploy/aws`.
 
-### Fixed
+#### Fixed
 - One malformed item in an LLM response (e.g. a relationship with `"target": null`, seen with
   Claude Haiku 4.5) no longer fails the whole document's extraction; that item is dropped and
   counted (`llm_output_items_dropped`).
 
-## [Unreleased] — Context correctness and extraction reliability
+### Context correctness and extraction reliability
 
 Found by deploying Engineering Context v1 to AWS and ingesting real GitHub repositories.
 
-### Fixed
+#### Fixed
 - **Removed dependencies were reported as dependencies.** The PR extraction prompt asked for
   "depends_on (dependencies added or removed)", so "moved the cache from memcached to redis"
   produced `billing-api depends_on memcached`. Relationships now carry an `assertion` and a
@@ -129,7 +131,7 @@ Found by deploying Engineering Context v1 to AWS and ingesting real GitHub repos
 - The benchmark's `--bedrock` mode ignored `AQUIFER_SEMANTIC_INDEX__*` settings and could
   report results without any successful LLM extraction; such runs are now marked invalid.
 
-### Added
+#### Added
 - Relationship `assertion` (present, added, removed, proposed, discussed, negated), `status`
   (current, claimed, removed, absent, proposed, not_merged, discussed), `as_of`,
   `quote_verified` and `mention_found` (replacing `grounded`, which only meant "mentioned").
@@ -147,13 +149,13 @@ Found by deploying Engineering Context v1 to AWS and ingesting real GitHub repos
 - Benchmark status scenarios and regression tests for additions, removals, replacements,
   negations, proposals, merged/unmerged PRs, conflicting evidence, retries and lifecycle.
 
-## [Unreleased] — Engineering Context v1
+### Engineering Context v1
 
 Aquifer now returns engineering facts **with their evidence** and runs reliably on OpenSearch
 Serverless. Tool names and required parameters are unchanged; new fields and parameters are
 optional.
 
-### Fixed
+#### Fixed
 - **OpenSearch Serverless writes.** The store used `_delete_by_query` (not supported by AOSS)
   and custom document ids (rejected by Classic vector collections). Writes now use system ids and
   search-then-bulk-delete, and replace documents by writing the new generation first.
@@ -174,7 +176,7 @@ optional.
 - `find_related`, `list_entities` and `get_document` now run the `before_query`/`after_query`
   interceptor hooks (previously only `search_context` did).
 
-### Added
+#### Added
 - **Evidence & provenance** on results: repository, path, commit revision, line range,
   line-anchored permalinks, `updated_at`, `indexed_at`, `fetched_at`, PR/issue `state`.
 - **Deterministic extraction** for Terraform, docker-compose and Backstage descriptors
@@ -200,7 +202,7 @@ optional.
 - CI workflow, issue/PR templates, `SECURITY.md`, `CONTRIBUTING.md`, deployment, operations,
   security and agent-integration docs, a three-minute demo.
 
-### Changed
+#### Changed
 - Documentation describes Aquifer as **source-available** (BSL 1.1), not open source. The
   license itself is unchanged.
 - `search_context` and other tools bound `k` (default max 50) and reject non-scalar filter
