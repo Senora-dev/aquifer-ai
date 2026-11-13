@@ -105,6 +105,8 @@ a:hover { color: var(--accent-hover); text-decoration: underline; text-underline
 code, kbd, pre { font-family: var(--mono); font-size: 12.5px; }
 :not(pre) > code { background: var(--surface-2); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; }
 svg { flex: none; }
+/* An icon inside a text link (e.g. the external-link mark) is sized to the text. */
+p > a > svg, li > a > svg { width: 1em; height: 1em; vertical-align: -.125em; margin-left: .2em; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 5px; }
 .skip { position: absolute; left: -999px; top: 8px; background: var(--surface); padding: 8px 12px; z-index: 50; }
 .skip:focus { left: 16px; }
